@@ -987,6 +987,7 @@ public:
 	}
 
 	bool close_scene();
+	Error close_scene_from_path(const String &p_path);
 
 	bool is_scene_in_use(const String &p_path);
 

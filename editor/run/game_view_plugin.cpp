@@ -495,9 +495,14 @@ bool GameView::_instance_rq_screenshot_static(const Callable &p_callback) {
 }
 
 bool GameView::_instance_rq_screenshot(const Callable &p_callback) {
-	if (debugger.is_null() || window_wrapper->get_window_enabled() || !embedded_process || !embedded_process->is_embedding_completed()) {
+	if (debugger.is_null()) {
 		return false;
 	}
+
+	if (window_wrapper->get_window_enabled() || !embedded_process || !embedded_process->is_embedding_completed()) {
+		return debugger->add_screenshot_callback(p_callback, Rect2i());
+	}
+
 	Rect2 r = embedded_process->get_adjusted_embedded_window_rect(embedded_process->get_rect());
 	r.position += embedded_process->get_global_position();
 #ifndef MACOS_ENABLED

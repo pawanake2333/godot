@@ -39,6 +39,19 @@
 				- [param shortcut_text]: [String] (Shortcut text of the [b]Command[/b] if available.)
 			</description>
 		</method>
+		<method name="execute_command">
+			<return type="void" />
+			<param index="0" name="key_name" type="String" />
+			<description>
+				Executes the command identified by [param key_name].
+			</description>
+		</method>
+		<method name="get_command_keys" qualifiers="const">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the sorted key names of all commands currently registered in the command palette.
+			</description>
+		</method>
 		<method name="remove_command">
 			<return type="void" />
 			<param index="0" name="key_name" type="String" />

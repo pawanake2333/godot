@@ -1,0 +1,24 @@
+config_version=5
+
+[application]
+config/name="Godot MCP Integration"
+run/main_scene="res://main.tscn"
+
+[autoload]
+GodotMCPRuntime="*res://addons/godot_mcp/runtime/runtime_helper.gd"
+
+[display]
+window/size/viewport_width=320
+window/size/viewport_height=180
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
+
+[input]
+test_action={
+"deadzone": 0.5,
+"events": []
+}
+
+[rendering]
+renderer/rendering_method="gl_compatibility"

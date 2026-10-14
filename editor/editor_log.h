@@ -127,6 +127,9 @@ private:
 	int line_limit = 10000;
 
 	Vector<LogMessage> messages;
+	static constexpr int AUTOMATION_LOG_CAPACITY = 2048;
+	Vector<Dictionary> automation_messages;
+	int64_t automation_sequence = 0;
 	// Maps MessageTypes to LogFilters for convenient access and storage (don't need 1 member per filter).
 	HashMap<MessageType, LogFilter *> type_filter_map;
 
@@ -180,6 +183,8 @@ protected:
 
 public:
 	void add_message(const String &p_msg, MessageType p_type = MSG_TYPE_STD);
+	void record_automation_message(const String &p_msg, MessageType p_type, const Dictionary &p_metadata = Dictionary());
+	Dictionary get_message_snapshot(int64_t p_cursor, int p_max_entries) const;
 	void register_undo_redo(UndoRedo *p_undo_redo);
 	void deinit();
 

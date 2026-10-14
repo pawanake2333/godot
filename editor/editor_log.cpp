@@ -261,7 +261,20 @@ void EditorLog::clear() {
 	_clear_request();
 }
 
+void EditorLog::record_automation_message(const String &p_msg, MessageType p_type, const Dictionary &p_metadata) {
+	if (automation_messages.is_empty()) {
+		automation_messages.resize(AUTOMATION_LOG_CAPACITY);
+	}
+	Dictionary entry = p_metadata.duplicate();
+	entry["cursor"] = ++automation_sequence;
+	entry["timestamp_msec"] = OS::get_singleton()->get_ticks_msec();
+	entry["type"] = p_type;
+	entry["message"] = p_msg.left(16384);
+	automation_messages.write[(automation_sequence - 1) % AUTOMATION_LOG_CAPACITY] = entry;
+}
+
 void EditorLog::_process_message(const String &p_msg, MessageType p_type, bool p_clear) {
+	record_automation_message(p_msg, p_type);
 	if (messages.size() > 0 && messages[messages.size() - 1].text == p_msg && messages[messages.size() - 1].type == p_type) {
 		// If previous message is the same as the new one, increase previous count rather than adding another
 		// instance to the messages list.
@@ -291,6 +304,26 @@ void EditorLog::add_message(const String &p_msg, MessageType p_type) {
 	for (int i = 0; i < line_count; i++) {
 		_process_message(lines[i], p_type, i == line_count - 1);
 	}
+}
+
+Dictionary EditorLog::get_message_snapshot(int64_t p_cursor, int p_max_entries) const {
+	ERR_FAIL_COND_V(p_cursor < 0 || p_cursor > automation_sequence, Dictionary());
+	ERR_FAIL_COND_V(p_max_entries < 1 || p_max_entries > AUTOMATION_LOG_CAPACITY, Dictionary());
+	const int64_t oldest = MAX(int64_t(1), automation_sequence - AUTOMATION_LOG_CAPACITY + 1);
+	const int64_t first = MAX(p_cursor + 1, oldest);
+	const int64_t end = MIN(automation_sequence + 1, first + p_max_entries);
+	Array entries;
+	for (int64_t sequence = first; sequence < end; sequence++) {
+		entries.push_back(automation_messages[(sequence - 1) % AUTOMATION_LOG_CAPACITY].duplicate());
+	}
+	Dictionary result;
+	result["entries"] = entries;
+	result["next_cursor"] = entries.is_empty() ? automation_sequence : end - 1;
+	result["latest_cursor"] = automation_sequence;
+	result["oldest_cursor"] = oldest;
+	result["dropped"] = p_cursor + 1 < oldest;
+	result["has_more"] = end <= automation_sequence;
+	return result;
 }
 
 void EditorLog::_set_dock_tab_icon(Ref<Texture2D> p_icon) {

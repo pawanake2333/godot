@@ -32,6 +32,13 @@
 				Closes the currently active scene, discarding any pending changes in the process. Returns [constant OK] on success or [constant ERR_DOES_NOT_EXIST] if there is no scene to close.
 			</description>
 		</method>
+		<method name="close_scene_from_path">
+			<return type="int" enum="Error" />
+			<param index="0" name="scene_filepath" type="String" />
+			<description>
+				Closes the open scene at [param scene_filepath], discarding any pending changes in the process. Returns [constant OK] on success, [constant ERR_DOES_NOT_EXIST] if the scene is not open, or [constant ERR_BUSY] if the editor is changing scenes.
+			</description>
+		</method>
 		<method name="edit_node">
 			<return type="void" />
 			<param index="0" name="node" type="Node" />
@@ -100,6 +107,16 @@
 			<return type="String" />
 			<description>
 				Returns the language currently used for the editor interface.
+			</description>
+		</method>
+		<method name="get_editor_log" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="cursor" type="int" default="0" />
+			<param index="1" name="max_entries" type="int" default="200" />
+			<description>
+				Returns Output messages after [param cursor], independent of Output filters, repeated-message collapsing, and clearing the panel. Retains the latest 2048 entries, with each message limited to 16384 characters. [param max_entries] must be between 1 and 2048.
+				The result contains [code]entries[/code], [code]next_cursor[/code], [code]latest_cursor[/code], [code]oldest_cursor[/code], [code]dropped[/code], and [code]has_more[/code]. Each entry contains [code]cursor[/code], [code]timestamp_msec[/code], [code]type[/code], and [code]message[/code]. Message types are 0 (standard), 1 (error), 2 (rich text), 3 (warning), and 4 (editor). This includes editor messages and output forwarded from debug games.
+				Cursors belong to one editor process. A negative cursor or one beyond [code]latest_cursor[/code] returns an empty dictionary.
 			</description>
 		</method>
 		<method name="get_editor_main_screen" qualifiers="const">
@@ -311,7 +328,7 @@
 			<param index="0" name="scene_filepath" type="String" />
 			<param index="1" name="set_inherited" type="bool" default="false" />
 			<description>
-				Opens the scene at the given path. If [param set_inherited] is [code]true[/code], creates a new inherited scene.
+				Opens the scene at the given path. If the scene is already open, its tab is made active. If [param set_inherited] is [code]true[/code], creates a new inherited scene.
 			</description>
 		</method>
 		<method name="play_current_scene">
@@ -451,6 +468,14 @@
 			<param index="0" name="scene_filepath" type="String" />
 			<description>
 				Reloads the scene at the given path. Fails if the scene is not open.
+			</description>
+		</method>
+		<method name="request_game_screenshot">
+			<return type="bool" />
+			<param index="0" name="callback" type="Callable" />
+			<description>
+				Requests a screenshot from the running project. The [param callback] is called with the image width, image height, and temporary PNG file path when the screenshot is ready. This works with embedded and separate game windows.
+				Returns [code]false[/code] if no running project is connected to the debugger.
 			</description>
 		</method>
 		<method name="restart_editor">

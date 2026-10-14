@@ -76,6 +76,7 @@ class EditorInterface : public Object {
 	void _quick_open(const String &p_file_path, const Callable &p_callback);
 	void _create_dialog_item_selected(bool p_is_canceled, const Callable &p_callback);
 	void _call_dialog_callback(const Callable &p_callback, const Variant &p_selected, const String &p_context);
+	static void _game_screenshot_completed(int p_width, int p_height, const String &p_path, const Rect2i &, const Callable &p_callback);
 
 	// Editor tools.
 
@@ -107,6 +108,7 @@ public:
 	Ref<EditorSettings> get_editor_settings() const;
 	EditorToaster *get_editor_toaster() const;
 	EditorUndoRedoManager *get_editor_undo_redo() const;
+	Dictionary get_editor_log(int64_t p_cursor = 0, int p_max_entries = 200) const;
 
 	Vector<Ref<Texture2D>> make_mesh_previews(const Vector<Ref<Mesh>> &p_meshes, Vector<Transform3D> *p_transforms, int p_preview_size);
 	void make_scene_preview(const String &p_path, Node *p_scene, int p_preview_size);
@@ -190,6 +192,7 @@ public:
 	void mark_scene_as_unsaved();
 	void save_all_scenes();
 	Error close_scene();
+	Error close_scene_from_path(const String &p_scene);
 
 	// Scene playback.
 
@@ -199,6 +202,7 @@ public:
 	void stop_playing_scene();
 	bool is_playing_scene() const;
 	String get_playing_scene() const;
+	bool request_game_screenshot(const Callable &p_callback);
 
 	void set_movie_maker_enabled(bool p_enabled);
 	bool is_movie_maker_enabled() const;

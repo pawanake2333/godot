@@ -38,6 +38,7 @@
 #include "core/object/class_db.h"
 #include "editor/docks/filesystem_dock.h"
 #include "editor/docks/inspector_dock.h"
+#include "editor/editor_log.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -48,6 +49,7 @@
 #include "editor/inspector/editor_preview_plugins.h"
 #include "editor/inspector/editor_resource_preview.h"
 #include "editor/inspector/property_selector.h"
+#include "editor/run/editor_run.h"
 #include "editor/run/editor_run_bar.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "editor/scene/editor_scene_tabs.h"
@@ -78,6 +80,10 @@ void EditorInterface::restart_editor(bool p_save) {
 }
 
 // Editor tools.
+
+Dictionary EditorInterface::get_editor_log(int64_t p_cursor, int p_max_entries) const {
+	return EditorNode::get_log()->get_message_snapshot(p_cursor, p_max_entries);
+}
 
 EditorCommandPalette *EditorInterface::get_command_palette() const {
 	return EditorCommandPalette::get_singleton();
@@ -768,7 +774,7 @@ Error EditorInterface::save_scene() {
 		return ERR_CANT_CREATE;
 	}
 
-	save_scene_as(get_edited_scene_root()->get_scene_file_path());
+	save_scene_as(get_edited_scene_root()->get_scene_file_path(), DisplayServer::get_singleton()->get_name() != "headless");
 	return OK;
 }
 
@@ -787,6 +793,10 @@ void EditorInterface::save_all_scenes() {
 
 Error EditorInterface::close_scene() {
 	return EditorNode::get_singleton()->close_scene() ? OK : ERR_DOES_NOT_EXIST;
+}
+
+Error EditorInterface::close_scene_from_path(const String &p_scene) {
+	return EditorNode::get_singleton()->close_scene_from_path(p_scene);
 }
 
 // Scene playback.
@@ -813,6 +823,17 @@ bool EditorInterface::is_playing_scene() const {
 
 String EditorInterface::get_playing_scene() const {
 	return EditorRunBar::get_singleton()->get_playing_scene();
+}
+
+void EditorInterface::_game_screenshot_completed(int p_width, int p_height, const String &p_path, const Rect2i &, const Callable &p_callback) {
+	if (p_callback.is_valid()) {
+		p_callback.call(p_width, p_height, p_path);
+	}
+}
+
+bool EditorInterface::request_game_screenshot(const Callable &p_callback) {
+	ERR_FAIL_COND_V_MSG(!p_callback.is_valid(), false, "The screenshot callback must be valid.");
+	return EditorRun::request_screenshot(callable_mp_static(EditorInterface::_game_screenshot_completed).bind(p_callback));
 }
 
 void EditorInterface::set_movie_maker_enabled(bool p_enabled) {
@@ -854,6 +875,7 @@ void EditorInterface::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_editor_settings"), &EditorInterface::get_editor_settings);
 	ClassDB::bind_method(D_METHOD("get_editor_toaster"), &EditorInterface::get_editor_toaster);
 	ClassDB::bind_method(D_METHOD("get_editor_undo_redo"), &EditorInterface::get_editor_undo_redo);
+	ClassDB::bind_method(D_METHOD("get_editor_log", "cursor", "max_entries"), &EditorInterface::get_editor_log, DEFVAL(0), DEFVAL(200));
 
 	ClassDB::bind_method(D_METHOD("make_mesh_previews", "meshes", "preview_size"), &EditorInterface::_make_mesh_previews);
 
@@ -934,6 +956,7 @@ void EditorInterface::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("save_scene_as", "path", "with_preview"), &EditorInterface::save_scene_as, DEFVAL(true));
 	ClassDB::bind_method(D_METHOD("save_all_scenes"), &EditorInterface::save_all_scenes);
 	ClassDB::bind_method(D_METHOD("close_scene"), &EditorInterface::close_scene);
+	ClassDB::bind_method(D_METHOD("close_scene_from_path", "scene_filepath"), &EditorInterface::close_scene_from_path);
 
 	ClassDB::bind_method(D_METHOD("mark_scene_as_unsaved"), &EditorInterface::mark_scene_as_unsaved);
 
@@ -945,6 +968,7 @@ void EditorInterface::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("stop_playing_scene"), &EditorInterface::stop_playing_scene);
 	ClassDB::bind_method(D_METHOD("is_playing_scene"), &EditorInterface::is_playing_scene);
 	ClassDB::bind_method(D_METHOD("get_playing_scene"), &EditorInterface::get_playing_scene);
+	ClassDB::bind_method(D_METHOD("request_game_screenshot", "callback"), &EditorInterface::request_game_screenshot);
 
 	ClassDB::bind_method(D_METHOD("set_movie_maker_enabled", "enabled"), &EditorInterface::set_movie_maker_enabled);
 	ClassDB::bind_method(D_METHOD("is_movie_maker_enabled"), &EditorInterface::is_movie_maker_enabled);

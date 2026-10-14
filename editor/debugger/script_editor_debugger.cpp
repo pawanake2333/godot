@@ -630,6 +630,21 @@ void ScriptEditorDebugger::_msg_visual_profile_frame(uint64_t p_thread_id, const
 void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data) {
 	DebuggerMarshalls::OutputError oe;
 	ERR_FAIL_COND_MSG(oe.deserialize(p_data) == false, "Failed to deserialize error message");
+	Dictionary metadata;
+	metadata["source"] = "runtime";
+	metadata["file"] = oe.source_file;
+	metadata["line"] = oe.source_line;
+	metadata["function"] = oe.source_func;
+	Array stack;
+	for (int i = 0; i < MIN(oe.callstack.size(), 64); i++) {
+		Dictionary frame;
+		frame["file"] = oe.callstack[i].file;
+		frame["line"] = oe.callstack[i].line;
+		frame["function"] = oe.callstack[i].func;
+		stack.push_back(frame);
+	}
+	metadata["stack"] = stack;
+	EditorNode::get_log()->record_automation_message(oe.error_descr.is_empty() ? oe.error : oe.error_descr, oe.warning ? EditorLog::MSG_TYPE_WARNING : EditorLog::MSG_TYPE_ERROR, metadata);
 
 	// Format time.
 	Array time_vals = { oe.hr, oe.min, oe.sec, oe.msec };

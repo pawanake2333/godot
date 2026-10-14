@@ -155,6 +155,8 @@ void EditorCommandPalette::_update_command_search(const String &search_text) {
 
 void EditorCommandPalette::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("add_command", "command_name", "key_name", "binded_callable", "shortcut_text"), &EditorCommandPalette::_add_command, DEFVAL("None"));
+	ClassDB::bind_method(D_METHOD("get_command_keys"), &EditorCommandPalette::get_command_keys);
+	ClassDB::bind_method(D_METHOD("execute_command", "key_name"), &EditorCommandPalette::execute_command);
 	ClassDB::bind_method(D_METHOD("remove_command", "key_name"), &EditorCommandPalette::remove_command);
 }
 
@@ -209,6 +211,18 @@ void EditorCommandPalette::get_actions_list(List<String> *p_list) const {
 	for (const KeyValue<String, Command> &E : commands) {
 		p_list->push_back(E.key);
 	}
+}
+
+PackedStringArray EditorCommandPalette::get_command_keys() const {
+	PackedStringArray keys;
+	keys.resize(commands.size());
+
+	int index = 0;
+	for (const KeyValue<String, Command> &E : commands) {
+		keys.set(index++, E.key);
+	}
+	keys.sort();
+	return keys;
 }
 
 void EditorCommandPalette::remove_command(String p_key_name) {

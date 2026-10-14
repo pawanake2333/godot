@@ -4006,6 +4006,22 @@ void EditorNode::_screenshot(bool p_use_utc) {
 }
 
 void EditorNode::_save_screenshot_with_embedded_process(int64_t p_w, int64_t p_h, const String &p_emb_path, const Rect2i &p_rect, const String &p_path) {
+	if (!p_rect.has_area()) {
+		Error error = DirAccess::rename_absolute(p_emb_path, p_path);
+		if (error != OK) {
+			error = DirAccess::copy_absolute(p_emb_path, p_path);
+			if (error == OK) {
+				DirAccess::remove_absolute(p_emb_path);
+			}
+		}
+		ERR_FAIL_COND_MSG(error != OK, "Cannot save screenshot to file '" + p_path + "'.");
+
+		if (EDITOR_GET("interface/editor/behavior/automatically_open_screenshots")) {
+			OS::get_singleton()->shell_show_in_file_manager(ProjectSettings::get_singleton()->globalize_path(p_path), true);
+		}
+		return;
+	}
+
 	Control *main_screen_control = editor_main_screen->get_control();
 	ERR_FAIL_NULL_MSG(main_screen_control, "Cannot get the editor main screen control.");
 	Viewport *viewport = main_screen_control->get_viewport();
@@ -5638,6 +5654,23 @@ bool EditorNode::close_scene() {
 	_discard_changes();
 	changing_scene = false;
 	return true;
+}
+
+Error EditorNode::close_scene_from_path(const String &p_path) {
+	if (changing_scene) {
+		return ERR_BUSY;
+	}
+
+	const String scene_path = ProjectSettings::get_singleton()->localize_path(p_path);
+	const int scene_idx = editor_data.get_edited_scene_from_path(scene_path);
+	if (scene_idx == -1) {
+		return ERR_DOES_NOT_EXIST;
+	}
+
+	_update_prev_closed_scenes(scene_path, true);
+	_remove_scene(scene_idx);
+	scene_tabs->update_scene_tabs();
+	return OK;
 }
 
 bool EditorNode::is_scene_in_use(const String &p_path) {

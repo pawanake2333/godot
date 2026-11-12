@@ -392,6 +392,8 @@ public:
 	void switch_to_debugger(int p_debugger_tab_idx);
 
 	void send_message(const String &p_message, const Array &p_args);
+	Dictionary profiler_states;
+	Dictionary get_profiler_state(const String &p_profiler) const;
 	void toggle_profiler(const String &p_profiler, bool p_enable, const Array &p_data);
 
 	ScriptEditorDebugger();

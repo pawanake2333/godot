@@ -36,8 +36,10 @@
 #include "core/io/resource_loader.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "editor/debugger/editor_debugger_node.h"
 #include "editor/docks/filesystem_dock.h"
 #include "editor/docks/inspector_dock.h"
+#include "editor/docks/scene_tree_dock.h"
 #include "editor/editor_log.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
@@ -49,6 +51,7 @@
 #include "editor/inspector/editor_preview_plugins.h"
 #include "editor/inspector/editor_resource_preview.h"
 #include "editor/inspector/property_selector.h"
+#include "editor/plugins/editor_plugin.h"
 #include "editor/run/editor_run.h"
 #include "editor/run/editor_run_bar.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
@@ -81,8 +84,113 @@ void EditorInterface::restart_editor(bool p_save) {
 
 // Editor tools.
 
+bool EditorInterface::is_resource_read_only(const Ref<Resource> &p_resource) const {
+	return EditorNode::get_singleton()->is_resource_read_only(p_resource);
+}
+
+bool EditorInterface::is_scene_class(const StringName &p_class) const {
+	return ClassDB::class_exists(p_class) && ClassDB::get_api_type(p_class) != ClassDB::API_EDITOR && ClassDB::get_api_type(p_class) != ClassDB::API_EDITOR_EXTENSION;
+}
+
+bool EditorInterface::is_editor_ready() const {
+	return EditorNode::get_singleton()->is_editor_ready();
+}
+
+bool EditorInterface::is_scene_node_inherited(Node *p_scene_root, Node *p_node) const {
+	ERR_FAIL_NULL_V(p_scene_root, false);
+	ERR_FAIL_NULL_V(p_node, false);
+	ERR_FAIL_COND_V(p_node != p_scene_root && !p_scene_root->is_ancestor_of(p_node), false);
+	Ref<SceneState> state = p_scene_root->get_scene_inherited_state();
+	return state.is_valid() && state->find_node_by_path(p_scene_root->get_path_to(p_node)) >= 0;
+}
+
+void EditorInterface::add_scene_node_path_changes(Node *p_scene_root, const Dictionary &p_paths) {
+	ERR_FAIL_COND(p_scene_root != get_edited_scene_root());
+	HashMap<Node *, NodePath> renames;
+	for (const Variant &key : p_paths.get_key_list()) {
+		Node *node = Object::cast_to<Node>(key);
+		ERR_FAIL_NULL(node);
+		ERR_FAIL_COND(node != p_scene_root && !p_scene_root->is_ancestor_of(node));
+		ERR_FAIL_COND(p_paths[key].get_type() != Variant::NODE_PATH);
+		renames[node] = p_paths[key];
+	}
+	SceneTreeDock::get_singleton()->perform_node_renames(p_scene_root, &renames);
+}
+
+Error EditorInterface::edit_inspector_properties(Object *p_object, const Dictionary &p_changes) {
+	return EditorInspector::commit_property_changes(p_object, p_changes);
+}
+
+void EditorInterface::add_undo_redo_property_change(Object *p_object, const StringName &p_name, const Variant &p_value, bool p_record_primary) {
+	EditorInspector::add_undo_redo_property_change(p_object, p_name, p_value, p_record_primary, true, true);
+}
+
+PackedStringArray EditorInterface::get_node_persistent_groups(Node *p_node) const {
+	ERR_FAIL_NULL_V(p_node, PackedStringArray());
+	List<Node::GroupInfo> groups;
+	p_node->get_groups(&groups);
+	PackedStringArray result;
+	for (const Node::GroupInfo &group : groups) {
+		if (group.persistent) {
+			result.push_back(group.name);
+		}
+	}
+	return result;
+}
+
+void EditorInterface::cleanup_scene_node_removal() {
+	SceneTreeDock::get_singleton()->cleanup_node_removal();
+}
+
+Error EditorInterface::save_resource_in_path(const Ref<Resource> &p_resource, const String &p_path) {
+	ERR_FAIL_COND_V(p_resource.is_null(), ERR_INVALID_PARAMETER);
+	Ref<Resource> cached = ResourceCache::get_ref(p_path);
+	if (cached.is_valid() && cached != p_resource) {
+		return ERR_ALREADY_IN_USE;
+	}
+	return EditorNode::get_singleton()->save_resource_in_path(p_resource, p_path);
+}
+
+Dictionary EditorInterface::get_unsaved_editor_state() const {
+	Dictionary state;
+	state["global_history_unsaved"] = get_editor_undo_redo()->is_history_unsaved(EditorUndoRedoManager::GLOBAL_HISTORY);
+	PackedStringArray plugins;
+	EditorData &data = EditorNode::get_editor_data();
+	for (int i = 0; i < data.get_editor_plugin_count(); i++) {
+		if (data.get_editor_plugin(i)->is_class("ScriptEditorPlugin")) {
+			continue; // Script buffers have their own explicit save/conflict checks.
+		}
+		const String status = data.get_editor_plugin(i)->get_unsaved_status();
+		if (!status.is_empty()) {
+			plugins.push_back(status);
+		}
+	}
+	state["plugins"] = plugins;
+	return state;
+}
+
+void EditorInterface::quit_editor() {
+	EditorNode::get_singleton()->quit_editor();
+}
+
 Dictionary EditorInterface::get_editor_log(int64_t p_cursor, int p_max_entries) const {
 	return EditorNode::get_log()->get_message_snapshot(p_cursor, p_max_entries);
+}
+
+Dictionary EditorInterface::get_editor_output_state() const {
+	return EditorNode::get_log()->get_output_state();
+}
+
+Error EditorInterface::configure_editor_output(const Dictionary &p_options) {
+	return EditorNode::get_log()->configure_output(p_options);
+}
+
+Dictionary EditorInterface::clear_editor_output(const String &p_scope, int64_t p_through_cursor) {
+	return EditorNode::get_log()->clear_output(p_scope, p_through_cursor);
+}
+
+Dictionary EditorInterface::read_editor_output(int p_offset, int p_max_chars) const {
+	return EditorNode::get_log()->read_output(p_offset, p_max_chars);
 }
 
 EditorCommandPalette *EditorInterface::get_command_palette() const {
@@ -375,6 +483,20 @@ void EditorInterface::make_scene_preview(const String &p_path, Node *p_scene, in
 
 	EditorResourcePreview::get_singleton()->check_for_invalidation(p_path);
 	EditorFileSystem::get_singleton()->filesystem_changed();
+}
+
+Error EditorInterface::start_debugger_server() {
+	EditorDebuggerNode *debugger = EditorDebuggerNode::get_singleton();
+	debugger->set_keep_open(true);
+	return debugger->start();
+}
+
+String EditorInterface::get_debugger_server_uri() const {
+	return EditorDebuggerNode::get_singleton()->get_server_uri();
+}
+
+void EditorInterface::new_scene() {
+	EditorNode::get_singleton()->new_scene();
 }
 
 void EditorInterface::add_root_node(Node *p_node) {
@@ -876,6 +998,22 @@ void EditorInterface::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_editor_toaster"), &EditorInterface::get_editor_toaster);
 	ClassDB::bind_method(D_METHOD("get_editor_undo_redo"), &EditorInterface::get_editor_undo_redo);
 	ClassDB::bind_method(D_METHOD("get_editor_log", "cursor", "max_entries"), &EditorInterface::get_editor_log, DEFVAL(0), DEFVAL(200));
+	ClassDB::bind_method(D_METHOD("get_editor_output_state"), &EditorInterface::get_editor_output_state);
+	ClassDB::bind_method(D_METHOD("configure_editor_output", "options"), &EditorInterface::configure_editor_output);
+	ClassDB::bind_method(D_METHOD("clear_editor_output", "scope", "through_cursor"), &EditorInterface::clear_editor_output, DEFVAL("panel"), DEFVAL(-1));
+	ClassDB::bind_method(D_METHOD("read_editor_output", "offset", "max_chars"), &EditorInterface::read_editor_output, DEFVAL(0), DEFVAL(16384));
+	ClassDB::bind_method(D_METHOD("is_resource_read_only", "resource"), &EditorInterface::is_resource_read_only);
+	ClassDB::bind_method(D_METHOD("is_scene_class", "class"), &EditorInterface::is_scene_class);
+	ClassDB::bind_method(D_METHOD("is_editor_ready"), &EditorInterface::is_editor_ready);
+	ClassDB::bind_method(D_METHOD("is_scene_node_inherited", "scene_root", "node"), &EditorInterface::is_scene_node_inherited);
+	ClassDB::bind_method(D_METHOD("add_scene_node_path_changes", "scene_root", "paths"), &EditorInterface::add_scene_node_path_changes);
+	ClassDB::bind_method(D_METHOD("edit_inspector_properties", "object", "changes"), &EditorInterface::edit_inspector_properties);
+	ClassDB::bind_method(D_METHOD("add_undo_redo_property_change", "object", "name", "value", "record_primary"), &EditorInterface::add_undo_redo_property_change, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("get_node_persistent_groups", "node"), &EditorInterface::get_node_persistent_groups);
+	ClassDB::bind_method(D_METHOD("cleanup_scene_node_removal"), &EditorInterface::cleanup_scene_node_removal);
+	ClassDB::bind_method(D_METHOD("save_resource_in_path", "resource", "path"), &EditorInterface::save_resource_in_path);
+	ClassDB::bind_method(D_METHOD("get_unsaved_editor_state"), &EditorInterface::get_unsaved_editor_state);
+	ClassDB::bind_method(D_METHOD("quit_editor"), &EditorInterface::quit_editor);
 
 	ClassDB::bind_method(D_METHOD("make_mesh_previews", "meshes", "preview_size"), &EditorInterface::_make_mesh_previews);
 
@@ -951,6 +1089,9 @@ void EditorInterface::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_edited_scene_root"), &EditorInterface::get_edited_scene_root);
 
 	ClassDB::bind_method(D_METHOD("add_root_node", "node"), &EditorInterface::add_root_node);
+	ClassDB::bind_method(D_METHOD("new_scene"), &EditorInterface::new_scene);
+	ClassDB::bind_method(D_METHOD("start_debugger_server"), &EditorInterface::start_debugger_server);
+	ClassDB::bind_method(D_METHOD("get_debugger_server_uri"), &EditorInterface::get_debugger_server_uri);
 
 	ClassDB::bind_method(D_METHOD("save_scene"), &EditorInterface::save_scene);
 	ClassDB::bind_method(D_METHOD("save_scene_as", "path", "with_preview"), &EditorInterface::save_scene_as, DEFVAL(true));

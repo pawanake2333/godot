@@ -141,6 +141,15 @@
 				[b]Note:[/b] This should be called whenever the script is changed to keep the open documentation state up to date.
 			</description>
 		</method>
+		<method name="set_breakpoint">
+			<return type="void" />
+			<param index="0" name="script" type="RefCounted" />
+			<param index="1" name="line" type="int" />
+			<param index="2" name="enabled" type="bool" />
+			<description>
+				Updates a Script breakpoint using the same gutter, closed-document cache and debugger registry as manual editing. [param line] is zero-based. [param script] must be a Script resource.
+			</description>
+		</method>
 	</methods>
 	<signals>
 		<signal name="editor_script_changed">

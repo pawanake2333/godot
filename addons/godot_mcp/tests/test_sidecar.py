@@ -19,7 +19,34 @@ class SidecarTests(unittest.TestCase):
     def test_catalog_is_available_without_editor(self):
         bridge = Mock()
         response = server.handle_message({"id": 1, "method": "tools/list"}, bridge)
-        self.assertEqual(len(response["result"]["tools"]), 25)
+        self.assertEqual(len(response["result"]["tools"]), 24)
+        bridge.invoke.assert_not_called()
+
+    def test_local_discovery_and_capabilities_do_not_require_editor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = server.GodotBridge("127.0.0.1", None, 1, 1, Path(directory))
+            try:
+                for name in ("godot_capabilities_get", "godot_tools_discover"):
+                    response = server.handle_message({"id": 1, "method": "tools/call", "params": {"name": name, "arguments": {}}}, bridge)
+                    self.assertFalse(response["result"]["isError"])
+                response = server.handle_message({"id": 1, "method": "tools/call", "params": {"name": "godot_tools_call", "arguments": {"tool_name": "godot_tools_call", "arguments": {}}}}, bridge)
+                self.assertTrue(response["result"]["isError"])
+            finally:
+                bridge.close()
+                bridge._services.close()
+
+    def test_headless_cli_workflows_are_not_mcp_tools(self):
+        bridge = Mock()
+        for name in ("godot_script_run", "godot_tests_run", "godot_script_validate", "godot_asset_bake", "godot_export_run", "godot_image_compare", "godot_files_search", "godot_resource_dependencies", "godot_scene_validate", "godot_script_create"):
+            response = server.handle_message({"id": 1, "method": "tools/call", "params": {"name": name, "arguments": {}}}, bridge)
+            self.assertEqual(response["error"]["code"], -32602)
+        bridge.invoke.assert_not_called()
+
+    def test_batch_size_limits_are_enforced_before_editor_dispatch(self):
+        bridge = Mock()
+        for size in (0, 257):
+            result = server.handle_message({"id": 1, "method": "tools/call", "params": {"name": "godot_edit_batch", "arguments": {"scene_id": "scene", "expected_revision": 0, "operations": [{"op": "create", "name": "Child"}] * size}}}, bridge)
+            self.assertTrue(result["result"]["isError"])
         bridge.invoke.assert_not_called()
 
     def test_invalid_arguments_never_reach_editor(self):
@@ -33,7 +60,7 @@ class SidecarTests(unittest.TestCase):
             with self.subTest(arguments=arguments):
                 response = server.handle_message({
                     "id": 1, "method": "tools/call",
-                    "params": {"name": "godot_send_mouse_event", "arguments": arguments},
+                    "params": {"name": "godot_input_send", "arguments": arguments},
                 }, bridge)
                 self.assertTrue(response["result"]["isError"])
         bridge.invoke.assert_not_called()
@@ -42,7 +69,7 @@ class SidecarTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             bridge = server.GodotBridge("127.0.0.1", None, 1, 1, Path(directory))
             with self.assertRaisesRegex(ConnectionError, "Start the custom editor"):
-                bridge.invoke("godot_get_state", {})
+                bridge.invoke("_editor_state", {})
 
     def test_wrong_project_endpoint_is_rejected_before_connect(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -53,7 +80,7 @@ class SidecarTests(unittest.TestCase):
             bridge = server.GodotBridge("127.0.0.1", None, 1, 1, project)
             with patch.object(server.socket, "create_connection") as connect:
                 with self.assertRaisesRegex(ConnectionError, "different project"):
-                    bridge.invoke("godot_get_state", {})
+                    bridge.invoke("_editor_state", {})
                 connect.assert_not_called()
 
     def test_transport_failure_is_not_replayed(self):
@@ -91,7 +118,7 @@ class SidecarTests(unittest.TestCase):
                 self.assertEqual(stream.write.call_count, 1)
                 request = json.loads(stream.write.call_args.args[0])
                 self.assertEqual(request["token"], "fixture-token")
-                self.assertEqual(request["params"]["tool"], "godot_get_state")
+                self.assertEqual(request["params"]["tool"], "_editor_state")
 
 
 if __name__ == "__main__":

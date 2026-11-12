@@ -2707,14 +2707,14 @@ DisplayServerEnums::WindowID DisplayServerMacOS::get_focused_window() const {
 }
 
 bool DisplayServerMacOS::window_can_draw(DisplayServerEnums::WindowID p_window) const {
-	return windows[p_window].is_visible;
+	return windows[p_window].is_visible && [windows[p_window].window_object isVisible];
 }
 
 bool DisplayServerMacOS::can_any_window_draw() const {
 	_THREAD_SAFE_METHOD_
 
 	for (const KeyValue<DisplayServerEnums::WindowID, WindowData> &E : windows) {
-		if (E.value.is_visible) {
+		if (E.value.is_visible && [E.value.window_object isVisible]) {
 			return true;
 		}
 	}

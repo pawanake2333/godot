@@ -134,6 +134,44 @@
 				Returns [code]true[/code] if the [EditorUndoRedoManager] is currently committing the action, i.e. running its "do" method or property change (see [method commit_action]).
 			</description>
 		</method>
+		<method name="has_undo">
+			<return type="bool" />
+			<description>
+				Returns whether the global, remote or active scene histories have an action to undo.
+			</description>
+		</method>
+		<method name="has_redo">
+			<return type="bool" />
+			<description>
+				Returns whether the global, remote or active scene histories have an action to redo.
+			</description>
+		</method>
+		<method name="undo">
+			<return type="bool" />
+			<description>
+				Undoes the next action using the same history selection as the editor menus.
+			</description>
+		</method>
+		<method name="redo">
+			<return type="bool" />
+			<description>
+				Redoes the next action using the same history selection as the editor menus.
+			</description>
+		</method>
+		<method name="undo_history">
+			<return type="bool" />
+			<param index="0" name="id" type="int" />
+			<description>
+				Undoes a specific editor history and updates manager stacks and version notifications. Returns false for an empty or busy history.
+			</description>
+		</method>
+		<method name="redo_history">
+			<return type="bool" />
+			<param index="0" name="id" type="int" />
+			<description>
+				Redoes a specific editor history and updates manager stacks and version notifications. Returns false for an empty or busy history.
+			</description>
+		</method>
 	</methods>
 	<signals>
 		<signal name="history_changed">

@@ -10,6 +10,16 @@
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="debug_control">
+			<return type="int" enum="Error" />
+			<param index="0" name="action" type="String" />
+			<description>Routes pause, continue, step_into, step_over or step_out to this debugger session. Returns [constant ERR_BUSY] if the current break state does not allow the action.</description>
+		</method>
+		<method name="request_stack_variables">
+			<return type="bool" />
+			<param index="0" name="frame" type="int" />
+			<description>Requests variables for a paused stack frame through the existing debug protocol. Results arrive through the stack frame signals.</description>
+		</method>
 		<method name="add_session_tab">
 			<return type="void" />
 			<param index="0" name="control" type="Control" />
@@ -68,8 +78,36 @@
 				Toggle the given [param profiler] on the attached remote instance, optionally passing additionally [param data]. See [EngineProfiler] for more details.
 			</description>
 		</method>
+		<method name="get_profiler_state">
+			<return type="Dictionary" />
+			<param index="0" name="profiler" type="String" />
+			<description>
+				Returns enabled and a monotonic generation for outgoing profiler configuration messages. Automation can observe an existing human capture and must only disable a capture it still owns.
+			</description>
+		</method>
 	</methods>
 	<signals>
+		<signal name="profiler_frame">
+			<param index="0" name="kind" type="String" />
+			<param index="1" name="data" type="Array" />
+			<description>Emitted for existing servers or visual profiler frames. Data uses the corresponding debugger marshaling format.</description>
+		</signal>
+		<signal name="break_reason">
+			<param index="0" name="message" type="String" />
+			<description>The reason supplied when the session pauses.</description>
+		</signal>
+		<signal name="stack_frame_variable">
+			<param index="0" name="data" type="Array" />
+			<description>A variable encoded by the existing debugger marshaling protocol.</description>
+		</signal>
+		<signal name="stack_frame_variables_started">
+			<param index="0" name="count" type="int" />
+			<description>The number of variables expected for the requested frame.</description>
+		</signal>
+		<signal name="stack_dump">
+			<param index="0" name="frames" type="Array" />
+			<description>The current paused stack frames received from the debugger.</description>
+		</signal>
 		<signal name="breaked">
 			<param index="0" name="can_debug" type="bool" />
 			<description>

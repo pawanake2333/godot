@@ -1,234 +1,119 @@
-# Godot MCP Addon
+# Godot MCP 使用指南
 
-## 作用
+**0.6.1 / 协议 2，默认 24 个工具，完整注册能力 62 项。** 适配本仓库 Godot 4.7.2 定制编辑器，插件面向通用开发流程。
 
-该 addon 将 Godot 编辑器和调试游戏能力通过 MCP tools 暴露给外部 AI 客户端。它面向本仓库构建的 `Godot_AI_Support.app`，依赖以下定制 API：
+日常脚本、已保存场景、资源和配置优先直接修改文件。MCP 负责编辑器状态协调、运行验证、输入、画面和调试；需要操作未保存文档、只存在于内存的资源或保留 Undo 时，再按需使用扩展编辑工具。
 
-- `EditorCommandPalette.get_command_keys()`
-- `EditorCommandPalette.execute_command()`
-- `EditorInterface.request_game_screenshot()`
-- `EditorInterface.close_scene_from_path()`
-- `EditorInterface.get_editor_log()`（0.2.0 的日志工具）
+逐项用途、参数、返回结果、边界和 62 个示例见 [工具参考手册](docs/tool_reference_zh-CN.md)。[工具契约](docs/tool_catalog.json) 是完整注册表；[文档索引](docs/README.md) 汇总当前说明与使用约束。
 
-## 目录
+## 日常工作流
 
-```text
-addons/godot_mcp/
-├── plugin.cfg
-├── editor/
-│   ├── godot_mcp_plugin.gd
-│   └── runtime_debugger.gd
-├── runtime/
-│   └── runtime_helper.gd
-└── sidecar/
-    └── godot_mcp_server.py
+1. editor_status/scene_list 确认工程与未保存内容。目标文档有未保存修改时先处理冲突，不能直接覆盖。
+2. 用代码和文件工具修改磁盘内容。已打开场景需要关闭或重开时，按需调用对应文档工具；不通过多次节点 RPC 重写一份已经保存的场景。
+3. 外部文件变更后按需 filesystem_scan。资源重导入、脚本重载和游戏重启分别处理，不在每次改动后全部执行。
+4. run_start → job_wait → 从成功结果取 run_id/session_id → 检查对象、输入、等待条件、截图或调试 → run_stop。
+
+本文流程中的短名称均省略 godot_ 前缀；实际调用使用完整名称。
+
+## 默认目录与按需能力
+
+默认 tools/list 只返回 24 项，减少初始 Schema 和选工具成本。其余 38 项可按领域发现；所有能力仍由同一个注册表校验和分发。
+
+```json
+{"query":"godot_edit_batch","tier":"extended","include_schema":true,"limit":1}
 ```
 
-EditorPlugin 在 `127.0.0.1` 上使用系统分配的端口监听本地 JSON-RPC，将端口、进程 ID、
-工程路径和随机 Token 写入 `<工程>/.godot/mcp/endpoint.json`，权限为 `0600`。
-每个工程使用独立端口；同一工程支持最多 16 个客户端连接。Python sidecar 使用标准输入输出
-实现 MCP，并在连接时核对编辑器实际工程路径。Runtime Helper 作为 Autoload 仅在调试游戏中
-注册 `godot_mcp` debugger namespace，发送就绪握手后才接受运行态操作。
-
-## 安装
-
-1. 将整个 `godot_mcp` 目录复制到目标工程的 `addons/` 下。
-2. 使用 `Godot_AI_Support.app` 打开工程。
-3. 在“项目 > 项目设置 > 插件”中启用 `Godot MCP`。
-4. 编辑器输出出现 `GODOT_MCP: listening on 127.0.0.1:<端口>` 后配置 MCP 客户端。
-
-MCP 客户端配置示例：
+以上参数传给 godot_tools_discover。取得契约后，通过 godot_tools_call 调用需要的扩展能力：
 
 ```json
 {
-  "mcpServers": {
-    "godot": {
-      "command": "python3",
-      "args": [
-        "/absolute/project/path/addons/godot_mcp/sidecar/godot_mcp_server.py",
-        "--project",
-        "/absolute/project/path"
-      ]
+  "tool_name":"godot_edit_batch",
+  "arguments":{
+    "scene_id":"<scene_id>",
+    "expected_revision":7,
+    "operations":[
+      {"op":"create","id":"probe","type":"Node3D","name":"Probe"},
+      {"op":"set","node_path":"$probe","changes":{"position":{"_type":"Vector3","x":1,"y":2,"z":3}}}
+    ]
+  }
+}
+```
+
+该例用于当前内存场景和 Undo 需求，标识与版本需替换为实际返回值。普通已保存文件编辑继续使用文件工具。
+
+发现入口默认每页 20 个摘要，不返回 Schema；用 query/domains/tier 缩小范围，再显式请求 include_schema=true。元数据 godot/tier 区分 core/extended。需要全部工具一次注册时，以 --toolset all 启动 sidecar；默认 --toolset core。
+
+节点编辑统一使用 edit_batch 的 create/delete/rename/reparent/duplicate/attach/groups/connect/disconnect。批量预检与一次 Undo 保留，atomic=false；项目 setter、脚本和外部副作用不能保证回滚。改名或移动复用原生 NodePath/动画轨迹引用更新，遵守编辑器偏好。
+
+## 配置与启动
+
+工程中安装本插件并在编辑器插件设置中启用。PROJECT、GODOT、PLUGIN 来自显式环境或使用者的本地配置，不要将本机路径写入受控文件。
+
+```bash
+python3 addons/godot_mcp/scripts/deploy.py --manifest
+python3 addons/godot_mcp/scripts/deploy.py --target "$PROJECT/addons/godot_mcp"
+"$GODOT" --editor --path "$PROJECT"
+```
+
+同步器基于 deployment.json 对目标进行冲突检查，再原子替换文件并验证哈希；本地修改、删除或未知文件会拒绝覆盖。无清单的旧副本须审阅后用 --baseline 首次接管。UID 和缓存不作为手改源码覆盖。生产插件更新后重新启动编辑器，避免载入不同包。
+
+MCP 客户端配置示例中的占位符需由客户端展开：
+
+```json
+{
+  "mcpServers":{
+    "godot":{
+      "command":"python3",
+      "args":["${PLUGIN}/sidecar/godot_mcp_server.py","--project","${PROJECT}","--godot","${GODOT}"]
     }
   }
 }
 ```
 
-sidecar 只使用 Python 3 标准库，不需要安装 pip 依赖。编辑器必须在 MCP 客户端调用工具前启动，并保持插件启用。
-安装到工程内的 sidecar 也可通过父目录中的 `project.godot` 自动发现工程。
-断线后的下一次调用重新发现端口并核对工程身份；失败的修改请求不会自动重放。
+sidecar 无编辑器时也可响应初始化、目录发现和任务查询。editor_start 复用/启动指定工程，等初始扫描和文档恢复；--auto-start 可在后台任务中自动复用或启动正常显示的编辑器。editor_status 在失败时给出 reason/startup_job，随后 job_wait/diagnostics_read/artifact_read 可检查启动结果。
 
-### Agent 会话没有注册 Godot MCP 工具时
+endpoint 位于工程 .godot/mcp/endpoint.json，使用随机回环端口和 Token，文件权限 0600。握手核对工程、版本、协议与源码哈希；不复制 Token，不固定端口。同一工程只启动一个插件编辑器，可接入多个客户端。
 
-工具注册由 MCP 客户端管理，插件不能修改当前 agent 会话的工具列表。可以通过 CLI
-调用相同的 MCP tools，返回与 `tools/call` 一致的 JSON：
+**跨步骤操作保持一个常驻 sidecar。** 任务、产物、输入所有权和自有游戏属于服务。服务退出清理自有游戏及临时产物，编辑器继续保留；逐条 CLI 不适合跨调用管理 job/run。
 
 ```bash
-python3 /absolute/project/addons/godot_mcp/sidecar/godot_mcp_server.py \
-  --project /absolute/project --call godot_get_state
-
-python3 /absolute/project/addons/godot_mcp/sidecar/godot_mcp_server.py \
-  --project /absolute/project --call godot_create_editor_node \
-  --arguments '{"parent_path":".","name":"SpawnPoint","script_path":"res://scripts/ServerNpcSpawnPoint3D.gd","properties":{"archetype_id":17}}'
-
-python3 /absolute/project/addons/godot_mcp/sidecar/godot_mcp_server.py \
-  --project /absolute/project --call godot_capture --output-image /tmp/game.png
+# 一次性读取
+python3 "$PLUGIN/sidecar/godot_mcp_server.py" --project "$PROJECT" --call godot_editor_status
+# 默认和完整目录
+python3 "$PLUGIN/sidecar/godot_mcp_server.py" --list-tools
+python3 "$PLUGIN/sidecar/godot_mcp_server.py" --list-tools --toolset all
 ```
 
-`--list-tools` 无需启动编辑器即可读取目录。`--output-image` 将截图保存到指定文件。
-CLI 工具调用失败时退出码为 1；连接错误会指出工程 endpoint 路径与启动条件。
+## 目标与安全边界
 
-## MCP Tools
+- 编辑器修改使用明确 scene_id 和最新 expected_revision；整个编辑器关闭/重启使用 editor_epoch 与 expected_document_revision。未保存内容默认拒绝丢弃。
+- 运行操作明确 session_id，不自动选择第一个游戏。只有当前服务自有 run_id 可以停止；外部已连接会话可检查和输入。
+- headless_logic 是 dummy 逻辑模式；hidden_gpu 隐藏主窗口并保留 GPU 绘制，需要可用图形登录会话；visible 正常显示。macOS 已验证 Metal。dummy 不伪造 first_render 或截图。
+- 输入持有归连接所有，释放和断连清理不影响另一连接持有的输入；序列完成或中断会释放。runtime_wait 等实际帧、信号或条件，不使用硬睡眠。
+- script_read/patch 仅处理 CodeEdit 内存缓冲区，保留历史且不直接写盘；普通代码编辑使用文件工具。script_reload 拒绝打开的文档，不承诺运行对象热重建。
+- 资源编辑属于扩展能力。共享 Resource 改动影响使用者，外部资源单独保存；覆盖要求当前磁盘哈希。继承/实例结构受保护，导入资源先复制。
+- 动画 tracks 返回插值；isolated 采单 clip、无项目脚本且在 modifiers 前；live 只读已应用姿态，不 seek。不是确定性物理仿真。
+- 暂停栈变量及单步走现有调试通道，已验证 GDScript；profiler 按需开启，受帧数和期限约束。其他语言与线程能力依赖 Godot。
 
-- `godot_get_state`：读取版本、工程、编辑场景和运行状态。
-- `godot_get_open_scenes`：列出已打开场景、未保存场景和当前活动场景。
-- `godot_close_scene`：按路径关闭场景；存在未保存修改时默认拒绝，传入 `force=true` 才丢弃修改。
-- `godot_open_scene`：按路径打开场景；场景已打开时切换到对应标签。
-- `godot_list_commands`：列出固定白名单中的已注册命令。
-- `godot_run_command`：执行白名单命令。
-- `godot_play` / `godot_stop`：启动或停止游戏。
-- `godot_capture`：获取嵌入式、浮动或独立游戏窗口的 PNG。
-- `godot_get_edited_scene`：读取编辑态场景树。
-- `godot_inspect_editor_node`：读取编辑态节点属性。
-- `godot_set_editor_property`：通过 Undo/Redo 修改编辑态属性。
-- `godot_create_editor_node`：通过 Undo/Redo 创建原生或脚本节点，可设置初始属性。
-- `godot_delete_editor_node`：通过 Undo/Redo 删除节点，撤销时恢复子树、顺序和 owner。
-- `godot_editor_undo` / `godot_editor_redo`：操作当前编辑场景的历史。
-- `godot_reload_project`：等待工程文件系统扫描完成，再通过编辑器重载已打开的脚本。
-- `godot_save_scene`：保存当前场景。
-- `godot_get_runtime_tree`：读取调试游戏场景树。
-- `godot_inspect_runtime_object`：读取运行时对象属性。
-- `godot_set_runtime_property`：修改运行时对象属性。
-- `godot_send_input_action`：按下或释放 InputMap action。
-- `godot_send_mouse_event`：注入原始鼠标按键、相对移动或滚轮事件，并等待一帧。
-- `godot_wait_runtime_frames`：等待运行游戏的帧通知，用于输入与截图同步。
-- `godot_get_logs`：按 cursor 增量读取编辑器 Output 和运行时诊断。
+成功数据在 structuredContent，身份在 _meta.godot。超时、断线或结果契约失败不等于撤销；先读状态核对，不自动重放修改。对象引用、快照、JSON、任务、事件和产物均有预算与有效期，详见手册。
 
-0.2.0 共注册 25 个 MCP tools。节点操作限定在当前场景：禁止删除根节点或修改实例/
-继承场景内部节点。创建脚本节点可省略 `type`，使用脚本的原生基类。
-新节点 owner 指向场景根节点，保存后成为 `.tscn` 的一部分。
-保存和导入会运行嵌套编辑器循环，TCP 请求分发包含重入保护。
+## Output 面板
 
-鼠标坐标使用游戏 viewport 像素坐标；`motion` 的 `delta_x` / `delta_y` 同时写入
-`relative` 与 `screen_relative`。`button` 支持左键 1、右键 2、中键 3 和扩展键 8/9；
-`wheel` 使用 `direction=up|down|left|right` 和 `factor`，自动发送释放事件。
-修饰键为 `ctrl`、`shift`、`alt`、`meta`。使用按键释放结束拖动：
+默认工具 godot_output_control 提供 get/configure/read/clear：查询状态和计数，显示或收起、级别/搜索/折叠，读取纯文本，以及明确范围清空。详见 [Output 指南](docs/output_control.md)。
 
-```json
-{"kind":"button","button":2,"pressed":true,"x":100,"y":100}
-{"kind":"motion","x":120,"y":95,"delta_x":20,"delta_y":-5}
-{"kind":"button","button":2,"pressed":false}
-{"kind":"wheel","direction":"up","factor":1}
-```
+clear 默认只清面板文字、计数和图标，保留 MCP 诊断。清诊断必须给 editor_epoch、scope=diagnostics|all 和 through_cursor，保留截止值之后的新日志；游标从不归零，history_generation 与 dropped 可识别历史变化。Debugger 独立错误树和原始启动日志文件不随 Output 清空。
 
-外部工具直接修改 `.tscn` 前，应先调用 `godot_get_open_scenes`。如果目标场景已打开且没有
-未保存修改，先调用 `godot_close_scene`，写盘后再调用 `godot_open_scene`。不要通过
-`force=true` 静默丢弃用户尚未保存的编辑器修改。
+## 原生无头流程
 
-Vector 和 Color 等非 JSON 类型使用带 `_type` 的对象：
+测试、业务烘焙、导出、静态验证/依赖、磁盘搜索和图像比较不进入 MCP。使用 Godot 原生 CLI、工程工具链与外部图像工具；MCP 只在需要会话状态时参与检查。详见 [职责说明](docs/tool_scope.md)。
 
-```json
-{"_type":"Vector3","x":1.0,"y":2.0,"z":3.0}
-```
-
-## 日志与自动化诊断
-
-`godot_get_logs` 使用定制编辑器的 `EditorInterface.get_editor_log()`。
-编辑器在插件启动前已经收集 Output 消息；运行时错误另外收集 `file`、`line`、`function`
-和最多 64 层 `stack`。历史独立于 Output 面板的过滤、折叠和清空，保留最近 2048 条，
-每条消息正文限制为 16384 个字符。
-
-### 编辑器日志
-
-为了让自动化机制能看到插件加载前发生的解析、导入和初始化错误，应通过 `--log-file` 启动
-编辑器：
+## 验证与维护
 
 ```bash
-mkdir -p "/absolute/project/path/.godot/mcp"
-
-"/absolute/path/Godot_AI_Support.app/Contents/MacOS/Godot" \
-  --editor \
-  --path "/absolute/project/path" \
-  --log-file "/absolute/project/path/.godot/mcp/editor.log"
+GODOT_MCP_PROCESS_TESTS=1 python3 -m unittest discover -s addons/godot_mcp/tests -p 'test_*.py'
+python3 addons/godot_mcp/tests/e2e_mcp_test.py --sidecar addons/godot_mcp/sidecar/godot_mcp_server.py --godot "$GODOT"
 ```
 
-编辑器日志包括 GDScript 解析错误、插件加载错误、资源导入错误、`push_error()`、
-`push_warning()` 和编辑器内部错误。如果 MCP 插件本身无法解析，TCP 服务不会启动，此时
-需要直接读取该日志文件。
+E2E 默认隐藏窗口；用户明确要求正常显示时才添加 --visible。测试按精确临时工程和可执行文件回收进程。运行结果与性能报告输出到系统临时目录或 CI 制品，不写入插件 docs。
 
-### 调试游戏日志
-
-桌面平台默认启用运行日志，工程设置为：
-
-```text
-debug/file_logging/enable_file_logging
-debug/file_logging/log_path = "user://logs/godot.log"
-debug/file_logging/max_log_files
-```
-
-macOS 上默认文件位置为：
-
-```text
-~/Library/Application Support/Godot/app_userdata/<工程名>/logs/godot.log
-```
-
-### 增量日志接口
-
-示例：
-
-```json
-{
-  "name": "godot_get_logs",
-  "arguments": {
-    "levels": ["error", "warning"],
-    "cursor": 120,
-    "max_entries": 200
-  }
-}
-```
-
-返回值包含 `next_cursor`、`latest_cursor`、`oldest_cursor`、`dropped`、`has_more`、
-`editor_pid` 和结构化 `entries`。`max_entries` 限制扫描的历史条数，`levels` 在扫描后
-过滤；即使过滤后没有消息，也要推进 `next_cursor`。`dropped=true` 表示旧历史已被覆盖。
-cursor 属于单个编辑器进程，进程变化后从 0 重新读取。
-
-自动化调用按以下顺序执行：
-
-1. 记录操作前的 `latest_cursor`。
-2. 调用 Godot MCP tool。
-3. 等待操作完成或达到超时。
-4. 使用操作前 cursor 查询新增日志。
-5. 根据 `entries[].level` 判断错误和警告，并根据来源定位问题。
-
-`godot_reload_project` 保留编辑器处理脚本文件冲突的机制；若有未保存的脚本修改，
-编辑器可能要求处理冲突。它不丢弃未保存的场景，也不重新打开已关闭的场景。
-
-## 当前边界
-
-- 仅监听回环地址，每个编辑器实例使用随机 Token；endpoint 文件由当前用户读取。
-- 工具未注册到当前会话时使用 CLI；自动注册仍需 MCP 客户端配置和重新连接。
-- Runtime Helper 只在 `EngineDebugger.is_active()` 时注册控制通道。
-- 截图要求本地调试游戏，支持嵌入式、浮动和独立窗口。
-- 运行态操作当前选择第一个已就绪的调试实例，不支持指定多个游戏实例。
-- Runtime 请求超时为 10 秒，sidecar MCP 请求超时默认 15 秒。
-- 命令执行采用固定白名单，不会动态开放未知 Command Palette 命令。
-
-## 验证
-
-```bash
-PYTHONPYCACHEPREFIX=/tmp/godot-mcp-pycache python3 -m unittest discover \
-  -s addons/godot_mcp/tests -p 'test_*.py' -v
-
-python3 addons/godot_mcp/tests/e2e_mcp_test.py \
-  --sidecar addons/godot_mcp/sidecar/godot_mcp_server.py \
-  --godot bin/godot_macos_editor.app/Contents/MacOS/Godot
-
-python3 addons/godot_mcp/tests/e2e_mcp_test.py \
-  --sidecar addons/godot_mcp/sidecar/godot_mcp_server.py \
-  --godot bin/godot_macos_editor.app/Contents/MacOS/Godot --require-capture
-```
-
-E2E 自动复制插件到隔离临时工程，通过文件事件等待 endpoint，测试后关闭自己的编辑器并
-删除临时工程。测试包括未保存保护、节点子树撤销和持久化、日志容量及分页、原始鼠标输入、
-运行时诊断、多个客户端和 CLI；图形模式还要求返回有效 PNG。同步使用 fd、进程或帧
-事件，没有固定睡眠。fixture 通过 `.gdignore` 排除，不会向实际工程注册测试类。
+原生补丁、构建与升级方式见 [引擎维护](docs/engine_patches.md)；属性命令、Undo、资源引用和人工操作共存规则见 [编辑器一致性约束](docs/editor_consistency.md)。

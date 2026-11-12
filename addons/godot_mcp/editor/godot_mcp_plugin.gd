@@ -1,40 +1,51 @@
 @tool
 extends EditorPlugin
 
+const EditorTools = preload("res://addons/godot_mcp/tools/editor_tools.gd")
+var _editor_tools: RefCounted
+
 const RuntimeDebugger = preload("res://addons/godot_mcp/editor/runtime_debugger.gd")
 const RUNTIME_AUTOLOAD_NAME := "GodotMCPRuntime"
 const RUNTIME_AUTOLOAD_PATH := "res://addons/godot_mcp/runtime/runtime_helper.gd"
 const LISTEN_HOST := "127.0.0.1"
 const ENDPOINT_PATH := "res://.godot/mcp/endpoint.json"
 const REQUEST_TIMEOUT_MSEC := 10000
-const COMMAND_ALLOWLIST := {
-	"editor/save_scene": true,
-	"editor/run_project": true,
-	"editor/run_current_scene": true,
-	"editor/editor_2d": true,
-	"editor/editor_3d": true,
-	"editor/editor_script": true,
-	"editor/editor_game": true,
-}
-
 var _server := TCPServer.new()
 var _clients: Array[Dictionary] = []
 var _requests := {}
 var _next_rpc_id := 1
 var _token := ""
+var _editor_epoch := Crypto.new().generate_random_bytes(16).hex_encode()
 var _endpoint_owned := false
 var _polling := false
 var _runtime_debugger: EditorDebuggerPlugin
 var _pending_runtime := {}
+var _package := {}
+var history_revision := 1
+
+func _on_history_changed() -> void:
+	history_revision += 1
 
 
 func _enter_tree() -> void:
-	if FileAccess.file_exists(ENDPOINT_PATH):
-		var existing = JSON.parse_string(FileAccess.get_file_as_string(ENDPOINT_PATH))
-		if existing is Dictionary and OS.is_process_running(int(existing.get("pid", -1))):
-			push_error("Godot MCP already has an editor for this project.")
+	for argument in OS.get_cmdline_args():
+		if argument in ["--export-pack", "--export-debug", "--export-release", "--export-patch", "--import"]:
 			set_process(false)
 			return
+	get_undo_redo().history_changed.connect(_on_history_changed)
+	get_undo_redo().version_changed.connect(_on_history_changed)
+	_package = _package_identity()
+	if FileAccess.file_exists(ENDPOINT_PATH):
+		var existing = JSON.parse_string(FileAccess.get_file_as_string(ENDPOINT_PATH))
+		if existing is Dictionary and int(existing.get("port", 0)) > 0:
+			# Unix process-status APIs may only accept child PIDs. Probe the endpoint
+			# listener instead, so a stale file after a crash causes no engine error.
+			var probe := TCPServer.new()
+			if probe.listen(int(existing.port), LISTEN_HOST) != OK:
+				push_error("Godot MCP endpoint is still listening for this project.")
+				set_process(false)
+				return
+			probe.stop()
 	_ensure_runtime_autoload()
 	_runtime_debugger = RuntimeDebugger.new()
 	_runtime_debugger.response_received.connect(_on_runtime_response)
@@ -122,6 +133,16 @@ func _poll_connection() -> void:
 		var peer: StreamPeerTCP = client["peer"]
 		peer.poll()
 		if peer.get_status() != StreamPeerSocket.STATUS_CONNECTED:
+			if _runtime_debugger != null:
+				for session in _runtime_debugger.list_sessions():
+					_runtime_debugger.send_runtime_request("godot_input_release_all", {"session_id": session.session_id, "_input_owner": str(peer.get_instance_id())})
+			for rpc_id in _requests.keys():
+				if _requests[rpc_id].peer == peer:
+					_requests.erase(rpc_id)
+			for runtime_id in _pending_runtime.keys():
+				if not _requests.has(_pending_runtime[runtime_id].rpc_id):
+					_runtime_debugger.forget_request(int(runtime_id))
+					_pending_runtime.erase(runtime_id)
 			_clients.remove_at(index)
 			continue
 		var available := mini(peer.get_available_bytes(), 65536)
@@ -132,7 +153,7 @@ func _poll_connection() -> void:
 				continue
 			client["buffer"].append_array(packet[1])
 		var buffer: PackedByteArray = client["buffer"]
-		if buffer.size() > 1048576:
+		if buffer.size() > 4194304:
 			peer.disconnect_from_host()
 			continue
 		for _line_index in range(32):
@@ -155,6 +176,9 @@ func _handle_line(line: String, peer: StreamPeerTCP) -> void:
 		"peer": peer, "id": request.get("id") if request is Dictionary else null,
 		"deadline": Time.get_ticks_msec() + REQUEST_TIMEOUT_MSEC,
 	}
+	if _requests.size() > 128:
+		_send_error(request_id, "BUSY", "Editor request budget exhausted; request was not submitted")
+		return
 	if not request is Dictionary:
 		_send_error(request_id, "INVALID_REQUEST", "Expected one JSON object per line.")
 		return
@@ -172,372 +196,204 @@ func _handle_line(line: String, peer: StreamPeerTCP) -> void:
 	if method != "invoke":
 		_send_error(request_id, "METHOD_NOT_FOUND", "Unknown bridge method: %s" % method)
 		return
+	_requests[request_id]["tool"] = str(params.get("tool", ""))
+	_requests[request_id]["target"] = {}
+	for key in ["scene_id", "session_id", "document_id", "expected_revision"]:
+		if params.get("arguments", {}).has(key):
+			_requests[request_id].target[key] = params.arguments[key]
 	_invoke_tool(request_id, str(params.get("tool", "")), params.get("arguments", {}))
 
 
 func _invoke_tool(request_id: Variant, tool: String, arguments: Dictionary) -> void:
-	match tool:
-		"godot_get_state":
-			_send_ok(request_id, _get_editor_state())
-		"godot_get_open_scenes":
-			_send_ok(request_id, _get_open_scenes())
-		"godot_close_scene":
-			_close_scene(request_id, arguments)
-		"godot_open_scene":
-			_open_scene(request_id, arguments)
-		"godot_list_commands":
-			_send_ok(request_id, _list_allowed_commands())
-		"godot_run_command":
-			_run_command(request_id, arguments)
-		"godot_play":
-			_play(request_id, arguments)
-		"godot_stop":
-			EditorInterface.stop_playing_scene()
-			_send_ok(request_id, _get_editor_state())
-		"godot_capture":
-			_capture(request_id)
-		"godot_get_edited_scene":
-			_send_ok(request_id, _get_edited_scene(arguments))
-		"godot_inspect_editor_node":
-			_inspect_editor_node(request_id, arguments)
-		"godot_set_editor_property":
-			_set_editor_property(request_id, arguments)
-		"godot_create_editor_node":
-			_create_editor_node(request_id, arguments)
-		"godot_delete_editor_node":
-			_delete_editor_node(request_id, arguments)
-		"godot_editor_undo", "godot_editor_redo":
-			_editor_history(request_id, tool == "godot_editor_redo")
-		"godot_reload_project":
-			_reload_project(request_id)
-		"godot_get_logs":
-			_get_logs(request_id, arguments)
-		"godot_save_scene":
-			var error := EditorInterface.save_scene()
-			if error == OK:
-				_send_ok(request_id, {"saved": true})
-			else:
-				_send_error(request_id, "SAVE_FAILED", error_string(error))
-		"godot_get_runtime_tree":
-			_send_runtime(request_id, "get_runtime_tree", arguments)
-		"godot_inspect_runtime_object":
-			_send_runtime(request_id, "inspect_runtime_object", arguments)
-		"godot_set_runtime_property":
-			_send_runtime(request_id, "set_runtime_property", arguments)
-		"godot_send_input_action":
-			_send_runtime(request_id, "send_input_action", arguments)
-		"godot_send_mouse_event":
-			_send_runtime(request_id, "send_mouse_event", arguments)
-		"godot_wait_runtime_frames":
-			_send_runtime(request_id, "wait_runtime_frames", arguments)
-		_:
-			_send_error(request_id, "TOOL_NOT_FOUND", "Unknown Godot MCP tool: %s" % tool)
+	if tool == "godot_output_control":
+		_output_control(request_id, arguments)
+		return
+	if tool == "_editor_ready":
+		var deadline := Time.get_ticks_msec() + 9000
+		while not EditorInterface.is_editor_ready() or EditorInterface.get_resource_filesystem().is_scanning():
+			if Time.get_ticks_msec() >= deadline:
+				_send_error(request_id, "EDITOR_NOT_READY", "Initial filesystem scan/layout restoration did not finish")
+				return
+			await get_tree().process_frame
+		_send_ok(request_id, _get_editor_state())
+		return
+	if tool == "godot_editor_commit_close":
+		if str(arguments.get("editor_epoch", "")) != _editor_epoch:
+			_send_error(request_id, "EDITOR_CONFLICT", "Editor epoch changed")
+			return
+		if str(arguments.get("expected_document_revision", "")) != _document_revision():
+			_send_error(request_id, "DOCUMENT_CONFLICT", "Open documents changed since the supplied editor status")
+			return
+		var other_documents := EditorInterface.get_unsaved_editor_state()
+		var policy := str(arguments.get("unsaved", "reject"))
+		# Shader/custom resource editors own buffers not covered by scene/script saves.
+		# Never close them implicitly, even under the partial save policy.
+		if not other_documents.plugins.is_empty():
+			_send_error(request_id, "UNTRACKED_DIRTY_DOCUMENT", "Other editor plugins have unsaved buffers without a revision contract; save them in their native editor before closing")
+			return
+		if policy != "discard" and other_documents.global_history_unsaved:
+			_send_error(request_id, "UNSAVED_EDITOR_RESOURCES", "Save other resource/plugin documents in the editor, or explicitly discard them")
+			return
+		var dirty_scenes := EditorInterface.get_unsaved_scenes()
+		var dirty_scripts := EditorInterface.get_script_editor().get_unsaved_files()
+		if (not dirty_scenes.is_empty() or not dirty_scripts.is_empty()) and policy == "reject":
+			_send_error(request_id, "UNSAVED_CHANGES", "Save scene/script documents or explicitly discard them")
+			return
+		if policy == "save":
+			if "" in dirty_scenes:
+				_send_error(request_id, "PATH_REQUIRED", "Save untitled scenes to explicit paths before closing")
+				return
+			EditorInterface.get_script_editor().save_all_scripts()
+			EditorInterface.save_all_scenes()
+			if not EditorInterface.get_unsaved_scenes().is_empty() or not EditorInterface.get_script_editor().get_unsaved_files().is_empty():
+				_send_error(request_id, "SAVE_FAILED", "Unsaved documents remain")
+				return
+		var root := EditorInterface.get_edited_scene_root()
+		var scripts: Array[String] = []
+		for script in EditorInterface.get_script_editor().get_open_scripts():
+			if script.resource_path.begins_with("res://") and not script.resource_path.contains("::"):
+				scripts.append(script.resource_path)
+		var active := EditorInterface.get_script_editor().get_current_script()
+		_send_ok(request_id, {"documents": EditorInterface.get_open_scenes(), "active_scene": root.scene_file_path if root != null else "", "script_documents": scripts, "active_script": active.resource_path if active != null else ""})
+		EditorInterface.call_deferred("quit_editor")
+		return
+	if tool == "_restore_script_documents":
+		var restored: Array[String] = []
+		for path in arguments.get("paths", []):
+			if str(path).begins_with("res://") and ResourceLoader.exists(path, "Script"):
+				var script := load(path) as Script
+				if script != null:
+					EditorInterface.edit_script(script, -1, 0, false)
+					restored.append(path)
+		var active := str(arguments.get("active", ""))
+		if active in restored:
+			EditorInterface.edit_script(load(active), -1, 0, false)
+		_send_ok(request_id, {"restored": restored})
+		return
+	if tool == "godot_profiler_capture":
+		var result: Dictionary = await _runtime_debugger.profiler_capture(arguments)
+		if result.ok:
+			_send_ok(request_id, result.result)
+		else:
+			_send_error(request_id, result.error.code, result.error.message)
+		return
+	if tool in ["godot_debugger_breakpoint_set", "godot_debugger_breakpoint_clear", "godot_debugger_state", "godot_debugger_control"]:
+		var result: Dictionary = await _runtime_debugger.debug_invoke(tool, arguments)
+		if result.ok:
+			_send_ok(request_id, result.result)
+		else:
+			_send_error(request_id, result.error.code, result.error.message)
+		return
+	if tool == "godot_debugger_prepare":
+		var status: int = EditorInterface.call("start_debugger_server")
+		if status != OK:
+			_send_error(request_id, "DEBUGGER_UNAVAILABLE", error_string(status))
+		else:
+			_send_ok(request_id, {"debugger_uri": EditorInterface.call("get_debugger_server_uri")})
+		return
+	if tool == "godot_run_list":
+		_send_ok(request_id, {"sessions": _runtime_debugger.list_sessions(), "debugger_uri": EditorInterface.call("get_debugger_server_uri") if EditorInterface.has_method("get_debugger_server_uri") else ""})
+		return
+	if tool == "godot_run_wait":
+		var response: Dictionary
+		if arguments.has("pid") or arguments.has("session_id"):
+			response = await _runtime_debugger.wait_stage(arguments)
+		else:
+			response = await _runtime_debugger.wait_sessions(int(arguments.get("minimum_sessions", 1)), int(arguments.get("timeout_ms", 5000)))
+		if response.ok:
+			_send_ok(request_id, response.result)
+		else:
+			_send_error(request_id, response.error.code, response.error.message)
+		return
+	var unified_tools := ["godot_animation_list", "godot_animation_inspect", "godot_animation_sample", "godot_object_call", "godot_object_inspect", "godot_object_set_properties", "godot_object_release", "godot_scene_tree", "godot_object_query"]
+	if tool in ["godot_capture_frame", "godot_monitors_read", "godot_runtime_stop", "godot_ui_focus", "godot_ui_inspect", "godot_input_sequence", "godot_input_send", "godot_input_release_all", "godot_runtime_wait"] or (tool in unified_tools and arguments.get("context", "editor") == "runtime"):
+		if not arguments.has("session_id"):
+			_send_error(request_id, "SESSION_REQUIRED", "Select a session from godot_run_list")
+			return
+		arguments["_input_owner"] = str(_requests[request_id].peer.get_instance_id())
+		_send_runtime(request_id, tool, arguments)
+		return
+	if (tool == "godot_object_set_properties" or (tool == "godot_object_call" and arguments.get("allow_mutation", false))) and not arguments.has("expected_revision"):
+		_send_error(request_id, "REVISION_REQUIRED", "Editor mutation requires expected_revision")
+		return
+	if tool in unified_tools and tool != "godot_object_release" and not arguments.has("scene_id"):
+		_send_error(request_id, "SCENE_REQUIRED", "Select an explicit editor document")
+		return
+	if tool in ["godot_edit_batch", "godot_animation_edit"] and _runtime_debugger != null and _runtime_debugger.has_active_session():
+		_send_error(request_id, "LIVE_EDIT_UNSUPPORTED", "Stop running sessions before editor structure/animation edits; use explicit runtime tools for temporary game mutations")
+		return
+	if tool in ["godot_script_read", "godot_script_patch", "godot_project_settings_set", "godot_editor_select", "godot_animation_list", "godot_animation_inspect", "godot_animation_sample", "godot_animation_edit", "godot_object_call", "godot_script_reload", "godot_resource_reimport", "godot_scene_tree", "godot_object_query", "godot_filesystem_scan", "godot_edit_batch", "godot_scene_create", "godot_scene_open", "godot_scene_save", "godot_scene_close", "godot_scene_undo", "godot_scene_redo", "godot_scene_list", "godot_class_describe", "godot_resource_load", "godot_resource_create", "godot_resource_duplicate", "godot_resource_save", "godot_object_release", "godot_object_inspect", "godot_object_set_properties", "godot_project_settings_get"]:
+		if _editor_tools == null:
+			_editor_tools = EditorTools.new(self)
+		var response: Dictionary = await _editor_tools.invoke(tool, arguments)
+		if response.ok:
+			_send_ok(request_id, response.result)
+		else:
+			_send_error(request_id, response.error.code, response.error.message)
+		return
+	if tool == "_editor_state":
+		_send_ok(request_id, _get_editor_state())
+	elif tool == "_editor_logs":
+		_get_logs(request_id, arguments)
+	else:
+		_send_error(request_id, "TOOL_NOT_FOUND", "Unknown editor operation: " + tool)
 
+
+func _document_revision() -> String:
+	var hash := HashingContext.new()
+	hash.start(HashingContext.HASH_SHA256)
+	hash.update(str(history_revision).to_utf8_buffer())
+	hash.update(JSON.stringify(EditorInterface.get_unsaved_editor_state()).to_utf8_buffer())
+	var manager := get_undo_redo()
+	for root in EditorInterface.get_open_scene_roots():
+		var history := manager.get_history_undo_redo(manager.get_object_history_id(root))
+		var path := root.scene_file_path
+		var info := [str(root.get_instance_id()), path, history.get_version() if history != null else 0, path in EditorInterface.get_unsaved_scenes(), FileAccess.get_modified_time(path) if FileAccess.file_exists(path) else 0, FileAccess.get_size(path) if FileAccess.file_exists(path) else 0]
+		hash.update(JSON.stringify(info).to_utf8_buffer())
+	for document in EditorInterface.get_script_editor().get_open_script_editors():
+		var resource: Resource = document.call("get_edited_resource")
+		var editor := document.get_base_editor()
+		if resource != null and editor is CodeEdit:
+			var path := resource.resource_path
+			hash.update(JSON.stringify([str(editor.get_instance_id()), path, editor.get_version(), editor.get_saved_version(), FileAccess.get_modified_time(path) if FileAccess.file_exists(path) else 0, FileAccess.get_size(path) if FileAccess.file_exists(path) else 0]).to_utf8_buffer())
+	return hash.finish().hex_encode()
 
 func _get_editor_state() -> Dictionary:
 	var scene_root := EditorInterface.get_edited_scene_root()
 	return {
+		"editor_pid": OS.get_process_id(),
+		"editor_epoch": _editor_epoch,
+		"editor_ready": EditorInterface.is_editor_ready(),
+		"document_revision": _document_revision(),
+		"unsaved_scripts": EditorInterface.get_script_editor().get_unsaved_files(),
+		"unsaved_editor_resources": EditorInterface.get_unsaved_editor_state(),
 		"godot_version": Engine.get_version_info().get("string", "unknown"),
 		"project_path": ProjectSettings.globalize_path("res://"),
 		"edited_scene": scene_root.scene_file_path if scene_root != null else "",
 		"playing": EditorInterface.is_playing_scene(),
 		"playing_scene": EditorInterface.get_playing_scene(),
 		"runtime_session_active": _runtime_debugger != null and _runtime_debugger.has_active_session(),
+		"pending_runtime_requests": _pending_runtime.size(),
 		"open_scenes": Array(EditorInterface.get_open_scenes()),
 		"unsaved_scenes": Array(EditorInterface.get_unsaved_scenes()),
 		"filesystem_scanning": EditorInterface.get_resource_filesystem().is_scanning(),
-		"mcp_version": "0.2.0",
+		"mcp_version": "0.6.1",
+		"engine_build": Engine.get_version_info(),
+		"package": _package,
+		"native_api": {"editor_consistency": EditorInterface.has_method("edit_inspector_properties") and EditorInterface.has_method("add_undo_redo_property_change") and EditorInterface.has_method("add_scene_node_path_changes") and ClassDB.class_has_method("EditorUndoRedoManager", "undo_history") and ClassDB.class_has_method("ScriptEditor", "set_breakpoint"), "output_panel": EditorInterface.has_method("get_editor_output_state") and EditorInterface.has_method("clear_editor_output") and EditorInterface.has_method("configure_editor_output") and EditorInterface.has_method("read_editor_output"), "new_scene": EditorInterface.has_method("new_scene"), "get_editor_log": EditorInterface.has_method("get_editor_log"), "debugger_server": EditorInterface.has_method("start_debugger_server") and EditorInterface.has_method("get_debugger_server_uri"), "script_document_resource": ClassDB.class_has_method("ScriptEditorBase", "get_edited_resource"), "debug_control": ClassDB.class_has_method("EditorDebuggerSession", "debug_control"), "stack_variables": ClassDB.class_has_method("EditorDebuggerSession", "request_stack_variables"), "profiler_frames": ClassDB.class_has_signal("EditorDebuggerSession", "profiler_frame")},
 		"native_log_available": EditorInterface.has_method("get_editor_log"),
 	}
 
 
-func _get_open_scenes() -> Dictionary:
-	var root := EditorInterface.get_edited_scene_root()
-	return {
-		"open_scenes": Array(EditorInterface.get_open_scenes()),
-		"unsaved_scenes": Array(EditorInterface.get_unsaved_scenes()),
-		"edited_scene": root.scene_file_path if root != null else "",
-	}
-
-
-func _close_scene(request_id: Variant, arguments: Dictionary) -> void:
-	var scene_path := ProjectSettings.localize_path(str(arguments.get("scene_path", "")))
-	if scene_path.is_empty():
-		_send_error(request_id, "INVALID_ARGUMENT", "scene_path is required.")
-		return
-
-	var open_scenes := EditorInterface.get_open_scenes()
-	if not open_scenes.has(scene_path):
-		_send_error(request_id, "SCENE_NOT_OPEN", "Scene is not open in the editor: %s" % scene_path)
-		return
-	if EditorInterface.get_unsaved_scenes().has(scene_path) and not bool(arguments.get("force", false)):
-		_send_error(request_id, "UNSAVED_CHANGES", "Scene has unsaved editor changes; pass force=true to discard them: %s" % scene_path)
-		return
-
-	var error := EditorInterface.close_scene_from_path(scene_path)
-	if error != OK:
-		_send_error(request_id, "CLOSE_FAILED", error_string(error))
-		return
-	_send_ok(request_id, {"closed": true, "scene_path": scene_path})
-
-
-func _open_scene(request_id: Variant, arguments: Dictionary) -> void:
-	var scene_path := ProjectSettings.localize_path(str(arguments.get("scene_path", "")))
-	if scene_path.is_empty():
-		_send_error(request_id, "INVALID_ARGUMENT", "scene_path is required.")
-		return
-	if not FileAccess.file_exists(scene_path) or not ["tscn", "scn"].has(scene_path.get_extension().to_lower()):
-		_send_error(request_id, "SCENE_NOT_FOUND", "Scene file does not exist: %s" % scene_path)
-		return
-
-	EditorInterface.open_scene_from_path(scene_path)
-	var root := EditorInterface.get_edited_scene_root()
-	if root == null or root.scene_file_path != scene_path:
-		_send_error(request_id, "OPEN_FAILED", "Editor did not open the requested scene: %s" % scene_path)
-		return
-	_send_ok(request_id, {"opened": true, "scene_path": scene_path})
-
-
-func _list_allowed_commands() -> Dictionary:
-	var registered := EditorInterface.get_command_palette().get_command_keys()
-	var commands: Array = []
-	for key in COMMAND_ALLOWLIST:
-		if registered.has(key):
-			commands.append(key)
-	commands.sort()
-	return {"commands": commands}
-
-
-func _run_command(request_id: Variant, arguments: Dictionary) -> void:
-	var key := str(arguments.get("key", ""))
-	if not COMMAND_ALLOWLIST.has(key):
-		_send_error(request_id, "COMMAND_NOT_ALLOWED", "Command is not in the fixed allowlist: %s" % key)
-		return
-	var palette := EditorInterface.get_command_palette()
-	if not palette.get_command_keys().has(key):
-		_send_error(request_id, "COMMAND_NOT_FOUND", "Command is not registered: %s" % key)
-		return
-	palette.execute_command(key)
-	_send_ok(request_id, {"executed": key})
-
-
-func _play(request_id: Variant, arguments: Dictionary) -> void:
-	var mode := str(arguments.get("mode", "main"))
-	match mode:
-		"main":
-			EditorInterface.play_main_scene()
-		"current":
-			EditorInterface.play_current_scene()
-		"custom":
-			var scene_path := str(arguments.get("scene_path", ""))
-			if scene_path.is_empty():
-				_send_error(request_id, "INVALID_ARGUMENT", "scene_path is required for custom mode.")
-				return
-			EditorInterface.play_custom_scene(scene_path)
-		_:
-			_send_error(request_id, "INVALID_ARGUMENT", "Unknown play mode: %s" % mode)
-			return
-	_send_ok(request_id, {"requested": true, "mode": mode})
-
-
-func _capture(request_id: Variant) -> void:
-	var accepted := EditorInterface.request_game_screenshot(_on_screenshot_ready.bind(request_id))
-	if not accepted:
-		_send_error(request_id, "CAPTURE_UNAVAILABLE", "No running game is ready for capture.")
-
-
-func _on_screenshot_ready(width: int, height: int, path: String, request_id: Variant) -> void:
-	if not _requests.has(request_id) or _requests[request_id]["peer"].get_status() != StreamPeerSocket.STATUS_CONNECTED:
-		DirAccess.remove_absolute(path)
-		return
-	_send_ok(request_id, {"width": width, "height": height, "path": path})
-
-
-func _get_edited_scene(arguments: Dictionary) -> Dictionary:
-	var root := EditorInterface.get_edited_scene_root()
-	if root == null:
-		return {"nodes": [], "scene_path": ""}
-	var nodes: Array = []
-	_append_editor_tree(root, 0, clampi(int(arguments.get("max_depth", 16)), 0, 64), nodes)
-	return {"scene_path": root.scene_file_path, "nodes": nodes}
-
-
-func _append_editor_tree(node: Node, depth: int, max_depth: int, output: Array) -> void:
-	output.append({"path": str(node.get_path()), "name": str(node.name), "type": node.get_class(), "depth": depth, "child_count": node.get_child_count()})
-	if depth >= max_depth:
-		return
-	for child in node.get_children():
-		_append_editor_tree(child, depth + 1, max_depth, output)
-
-
-func _inspect_editor_node(request_id: Variant, arguments: Dictionary) -> void:
-	var node: Node = _find_editor_node(str(arguments.get("node_path", "")))
-	if node == null:
-		_send_error(request_id, "OBJECT_NOT_FOUND", "Edited scene node was not found.")
-		return
-	var requested: Array = arguments.get("properties", [])
-	var properties: Array = []
-	for info in node.get_property_list():
-		var property_name := str(info.get("name", ""))
-		var usage := int(info.get("usage", 0))
-		if property_name.is_empty() or usage & (PROPERTY_USAGE_CATEGORY | PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP):
-			continue
-		if not requested.is_empty() and not requested.has(property_name):
-			continue
-		properties.append({"name": property_name, "type": int(info.get("type", TYPE_NIL)), "usage": usage, "value": _to_wire_value(node.get(property_name))})
-	_send_ok(request_id, {"path": str(node.get_path()), "class": node.get_class(), "properties": properties})
-
-
-func _set_editor_property(request_id: Variant, arguments: Dictionary) -> void:
-	var node: Node = _find_editor_node(str(arguments.get("node_path", "")))
-	if node == null:
-		_send_error(request_id, "OBJECT_NOT_FOUND", "Edited scene node was not found.")
-		return
-	var property_name := str(arguments.get("property", ""))
-	if property_name.is_empty() or not _has_property(node, property_name):
-		_send_error(request_id, "PROPERTY_NOT_FOUND", "Edited scene property was not found: %s" % property_name)
-		return
-	var old_value = node.get(property_name)
-	var new_value = _from_wire_value(arguments.get("value"))
-	var undo := get_undo_redo()
-	undo.create_action("MCP: Set %s" % property_name)
-	undo.add_do_property(node, property_name, new_value)
-	undo.add_undo_property(node, property_name, old_value)
-	undo.commit_action()
-	_send_ok(request_id, {"property": property_name, "value": _to_wire_value(node.get(property_name))})
-
-
-func _find_editor_node(path: String):
-	var root := EditorInterface.get_edited_scene_root()
-	if root == null:
-		return null
-	if path.is_empty() or path == "." or path == str(root.get_path()):
-		return root
-	var node := root.get_node_or_null(NodePath(path))
-	if node != null and (node == root or root.is_ancestor_of(node)):
-		return node
-	if path.begins_with(str(root.get_path()) + "/"):
-		return root.get_node_or_null(NodePath(path.trim_prefix(str(root.get_path()) + "/")))
-	return null
-
-
-func _create_editor_node(request_id: Variant, arguments: Dictionary) -> void:
-	var root := EditorInterface.get_edited_scene_root()
-	var parent: Node = _find_editor_node(str(arguments.get("parent_path", ".")))
-	if root == null or parent == null:
-		_send_error(request_id, "OBJECT_NOT_FOUND", "Edited scene parent was not found.")
-		return
-	if parent != root and parent.owner != root:
-		_send_error(request_id, "NOT_EDITABLE", "Parent belongs to an instantiated or inherited scene.")
-		return
-	var node_name := str(arguments.get("name", ""))
-	if node_name.is_empty() or node_name != node_name.validate_node_name() or parent.has_node(NodePath(node_name)):
-		_send_error(request_id, "INVALID_ARGUMENT", "name must be a unique, valid child node name.")
-		return
-	var node_type := str(arguments.get("type", "Node"))
-	var script_path := str(arguments.get("script_path", ""))
-	var script: Script
-	if not script_path.is_empty():
-		if not script_path.begins_with("res://") or not ResourceLoader.exists(script_path, "Script"):
-			_send_error(request_id, "INVALID_ARGUMENT", "script_path must identify a project script.")
-			return
-		script = load(script_path) as Script
-		if script == null or not script.can_instantiate():
-			_send_error(request_id, "INVALID_SCRIPT", "Script cannot be instantiated.")
-			return
-		if not arguments.has("type"):
-			node_type = script.get_instance_base_type()
-		if not ClassDB.is_parent_class(node_type, script.get_instance_base_type()):
-			_send_error(request_id, "INVALID_ARGUMENT", "Node type does not inherit the script's base type.")
-			return
-	if not ClassDB.class_exists(node_type) or not ClassDB.is_parent_class(node_type, "Node") or not ClassDB.can_instantiate(node_type):
-		_send_error(request_id, "INVALID_ARGUMENT", "type must be an instantiable Node class.")
-		return
-	var node: Node = ClassDB.instantiate(node_type)
-	node.name = node_name
-	if script != null:
-		node.set_script(script)
-	var properties: Dictionary = arguments.get("properties", {})
-	for key in properties:
-		if key in ["name", "owner", "script"] or not _has_property(node, str(key)):
-			node.free()
-			_send_error(request_id, "PROPERTY_NOT_FOUND", "Invalid initial property: %s" % key)
-			return
-	for key in properties:
-		node.set(str(key), _from_wire_value(properties[key]))
-	var undo := get_undo_redo()
-	undo.create_action("MCP: Create %s" % node_name, UndoRedo.MERGE_DISABLE, root)
-	undo.add_do_method(parent, "add_child", node, true)
-	undo.add_do_property(node, "owner", root)
-	undo.add_do_reference(node)
-	undo.add_undo_method(parent, "remove_child", node)
-	undo.commit_action()
-	_send_ok(request_id, {"created": true, "node_path": str(root.get_path_to(node)), "class": node.get_class()})
-
-
-func _delete_editor_node(request_id: Variant, arguments: Dictionary) -> void:
-	var root := EditorInterface.get_edited_scene_root()
-	var node: Node = _find_editor_node(str(arguments.get("node_path", "")))
-	if node == null:
-		_send_error(request_id, "OBJECT_NOT_FOUND", "Edited scene node was not found.")
-		return
-	if node == root or node.owner != root:
-		_send_error(request_id, "NOT_EDITABLE", "Cannot delete the scene root or an inherited/instantiated child.")
-		return
-	var path := str(root.get_path_to(node))
-	var parent := node.get_parent()
-	var owners: Array = []
-	_collect_owners(node, owners)
-	var undo := get_undo_redo()
-	undo.create_action("MCP: Delete %s" % node.name, UndoRedo.MERGE_DISABLE, root)
-	undo.add_do_method(EditorInterface.get_selection(), "clear")
-	undo.add_do_method(parent, "remove_child", node)
-	undo.add_undo_method(parent, "add_child", node)
-	undo.add_undo_method(parent, "move_child", node, node.get_index())
-	for entry in owners:
-		undo.add_undo_property(entry[0], "owner", entry[1])
-	undo.add_undo_reference(node)
-	undo.commit_action()
-	_send_ok(request_id, {"deleted": true, "node_path": path})
-
-
-func _collect_owners(node: Node, output: Array) -> void:
-	output.append([node, node.owner])
-	for child in node.get_children():
-		_collect_owners(child, output)
-
-
-func _editor_history(request_id: Variant, redo: bool) -> void:
-	var root := EditorInterface.get_edited_scene_root()
-	if root == null:
-		_send_error(request_id, "OBJECT_NOT_FOUND", "No edited scene.")
-		return
-	var manager := get_undo_redo()
-	var history := manager.get_history_undo_redo(manager.get_object_history_id(root))
-	if (redo and not history.has_redo()) or (not redo and not history.has_undo()):
-		_send_error(request_id, "EMPTY_HISTORY", "No scene action available.")
-		return
-	if redo:
-		history.redo()
-	else:
-		history.undo()
-	_send_ok(request_id, _get_open_scenes())
-
-
-func _reload_project(request_id: Variant) -> void:
-	var filesystem := EditorInterface.get_resource_filesystem()
-	if filesystem.is_scanning():
-		_send_error(request_id, "BUSY", "Filesystem scan already in progress.")
-		return
-	filesystem.filesystem_changed.connect(_on_project_scanned.bind(request_id), CONNECT_ONE_SHOT)
-	filesystem.scan()
-
-
-func _on_project_scanned(request_id: Variant) -> void:
-	if not _requests.has(request_id):
-		return
-	EditorInterface.get_script_editor().reload_open_files()
-	_send_ok(request_id, {"reloaded": true, "state": _get_editor_state()})
+func _package_identity() -> Dictionary:
+	var data = JSON.parse_string(FileAccess.get_file_as_string("res://addons/godot_mcp/package.json")) if FileAccess.file_exists("res://addons/godot_mcp/package.json") else null
+	if not data is Dictionary:
+		return {"verified": false, "reason": "package.json missing; generate it with scripts/deploy.py --manifest"}
+	var mismatches: Array[String] = []
+	for path in data.get("files", {}):
+		if FileAccess.get_sha256("res://addons/godot_mcp/" + path) != data.files[path]:
+			mismatches.append(path)
+	return {"verified": mismatches.is_empty(), "version": data.get("version"), "protocol": data.get("protocol"), "source_sha256": data.get("source_sha256"), "mismatches": mismatches}
 
 
 func _get_logs(request_id: Variant, arguments: Dictionary) -> void:
@@ -551,22 +407,74 @@ func _get_logs(request_id: Variant, arguments: Dictionary) -> void:
 		return
 	var result: Dictionary = EditorInterface.call("get_editor_log", cursor, clampi(int(arguments.get("max_entries", 200)), 1, 2048))
 	var levels: Array = arguments.get("levels", [])
+	var runtime_pid := 0
+	if arguments.has("session_id"):
+		for session in _runtime_debugger.list_sessions():
+			if session.session_id == arguments.session_id:
+				runtime_pid = int(session.pid)
+		if runtime_pid == 0:
+			_send_error(request_id, "SESSION_NOT_FOUND", "Diagnostic session filter requires a currently connected session")
+			return
 	var entries: Array = []
 	var names := ["info", "error", "info", "warning", "editor"]
 	for entry in result["entries"]:
 		entry["level"] = names[int(entry["type"])]
+		entry["source"] = entry.get("source", "editor")
+		if arguments.has("source") and entry.source != arguments.source:
+			continue
+		if runtime_pid != 0 and int(entry.get("runtime_pid", 0)) != runtime_pid:
+			continue
 		if levels.is_empty() or levels.has(entry["level"]):
 			entries.append(entry)
 	result["entries"] = entries
 	result["editor_pid"] = OS.get_process_id()
+	result["attribution"] = "native debugger process/thread; editor messages are not attributed to requests"
 	_send_ok(request_id, result)
 
 
-func _has_property(object: Object, property_name: String) -> bool:
-	for info in object.get_property_list():
-		if str(info.get("name", "")) == property_name:
-			return true
-	return false
+func _output_control(request_id: Variant, arguments: Dictionary) -> void:
+	for method in ["get_editor_output_state", "configure_editor_output", "clear_editor_output", "read_editor_output"]:
+		if not EditorInterface.has_method(method):
+			_send_error(request_id, "CAPABILITY_UNAVAILABLE", "Rebuild the custom editor for Output dock control")
+			return
+	var action := str(arguments.get("action", "get"))
+	var state: Dictionary = EditorInterface.call("get_editor_output_state")
+	var result: Dictionary
+	match action:
+		"get":
+			result = state
+		"configure":
+			var options := {}
+			for key in ["visible", "collapse", "search", "levels"]:
+				if arguments.has(key):
+					options[key] = arguments[key]
+			var error: int = EditorInterface.call("configure_editor_output", options)
+			if error != OK:
+				_send_error(request_id, "INVALID_ARGUMENT", error_string(error))
+				return
+			result = EditorInterface.call("get_editor_output_state")
+		"read":
+			if arguments.has("editor_epoch") and str(arguments.editor_epoch) != _editor_epoch:
+				_send_error(request_id, "EDITOR_CONFLICT", "Editor epoch changed; read a new first page")
+				return
+			if arguments.has("expected_revision") and int(arguments.expected_revision) != int(state.revision):
+				_send_error(request_id, "OUTPUT_CHANGED", "Displayed Output changed; read a new first page")
+				return
+			result = EditorInterface.call("read_editor_output", int(arguments.get("offset", 0)), int(arguments.get("max_chars", 16384)))
+		"clear":
+			if str(arguments.get("editor_epoch", "")) != _editor_epoch:
+				_send_error(request_id, "EDITOR_CONFLICT", "Editor epoch changed; query Output before clearing")
+				return
+			result = EditorInterface.call("clear_editor_output", str(arguments.get("scope", "panel")), int(arguments.get("through_cursor", -1)))
+		_:
+			_send_error(request_id, "INVALID_ARGUMENT", "Unknown Output action")
+			return
+	if result.has("error"):
+		_send_error(request_id, str(result.error), str(result.message))
+		return
+	result["action"] = action
+	result["editor_epoch"] = _editor_epoch
+	_send_ok(request_id, result)
 
 
 func _send_runtime(rpc_id: Variant, operation: String, arguments: Dictionary) -> void:
@@ -609,18 +517,26 @@ func _expire_runtime_requests() -> void:
 	for runtime_id in expired:
 		var rpc_id = _pending_runtime[runtime_id]["rpc_id"]
 		_pending_runtime.erase(runtime_id)
+		_runtime_debugger.forget_request(int(runtime_id))
 		_send_error(rpc_id, "TIMEOUT", "Runtime request timed out.")
 	for rpc_id in _requests.keys():
 		if now >= int(_requests[rpc_id]["deadline"]):
 			_send_error(rpc_id, "TIMEOUT", "Editor request timed out.")
 
 
+func _context(request_id: Variant, result: Variant = null) -> Dictionary:
+	var request: Dictionary = _requests.get(request_id, {})
+	var context := {"scope": "editor", "protocol": 2, "editor_epoch": _editor_epoch, "project_id": ProjectSettings.globalize_path("res://").trim_suffix("/").sha256_text(), "request_id": request_id, "tool": request.get("tool", ""), "target": request.get("target", {})}
+	if result is Dictionary and result.has("revision"):
+		context["revision_after"] = result.revision
+	return context
+
 func _send_ok(request_id: Variant, result: Variant) -> void:
-	_send_message({"id": request_id, "ok": true, "result": result})
+	_send_message({"id": request_id, "ok": true, "result": result, "context": _context(request_id, result)})
 
 
 func _send_error(request_id: Variant, code: String, message: String) -> void:
-	_send_message({"id": request_id, "ok": false, "error": {"code": code, "message": message}})
+	_send_message({"id": request_id, "ok": false, "error": {"code": code, "message": message, "stage": "editor"}, "context": _context(request_id)})
 
 
 func _send_message(message: Dictionary) -> void:
@@ -633,58 +549,3 @@ func _send_message(message: Dictionary) -> void:
 	if peer.get_status() == StreamPeerSocket.STATUS_CONNECTED:
 		message["id"] = request["id"]
 		peer.put_data((JSON.stringify(message) + "\n").to_utf8_buffer())
-
-
-func _to_wire_value(value: Variant, depth := 0) -> Variant:
-	if depth > 6:
-		return {"_type": "truncated"}
-	match typeof(value):
-		TYPE_NIL, TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING:
-			return value
-		TYPE_STRING_NAME, TYPE_NODE_PATH:
-			return str(value)
-		TYPE_VECTOR2:
-			return {"_type": "Vector2", "x": value.x, "y": value.y}
-		TYPE_VECTOR2I:
-			return {"_type": "Vector2i", "x": value.x, "y": value.y}
-		TYPE_VECTOR3:
-			return {"_type": "Vector3", "x": value.x, "y": value.y, "z": value.z}
-		TYPE_VECTOR3I:
-			return {"_type": "Vector3i", "x": value.x, "y": value.y, "z": value.z}
-		TYPE_COLOR:
-			return {"_type": "Color", "r": value.r, "g": value.g, "b": value.b, "a": value.a}
-		TYPE_ARRAY:
-			var output: Array = []
-			for item in value:
-				output.append(_to_wire_value(item, depth + 1))
-			return output
-		TYPE_DICTIONARY:
-			var output := {}
-			for key in value:
-				output[str(key)] = _to_wire_value(value[key], depth + 1)
-			return output
-		TYPE_OBJECT:
-			if value == null:
-				return null
-			var object: Object = value
-			return {"_type": object.get_class(), "instance_id": object.get_instance_id()}
-		_:
-			return {"_type": type_string(typeof(value)), "value": str(value)}
-
-
-func _from_wire_value(value: Variant) -> Variant:
-	if not value is Dictionary or not value.has("_type"):
-		return value
-	match str(value["_type"]):
-		"Vector2":
-			return Vector2(float(value.get("x", 0.0)), float(value.get("y", 0.0)))
-		"Vector2i":
-			return Vector2i(int(value.get("x", 0)), int(value.get("y", 0)))
-		"Vector3":
-			return Vector3(float(value.get("x", 0.0)), float(value.get("y", 0.0)), float(value.get("z", 0.0)))
-		"Vector3i":
-			return Vector3i(int(value.get("x", 0)), int(value.get("y", 0)), int(value.get("z", 0)))
-		"Color":
-			return Color(float(value.get("r", 0.0)), float(value.get("g", 0.0)), float(value.get("b", 0.0)), float(value.get("a", 1.0)))
-		_:
-			return value.get("value")

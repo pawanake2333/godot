@@ -3260,8 +3260,9 @@ void EditorFileSystem::reimport_files(const Vector<String> &p_files) {
 	importing = true;
 
 	Vector<String> reloads;
+	const String progress_task = "reimport_" + itos(reimport_progress_sequence++);
 
-	EditorProgress *ep = memnew(EditorProgress("reimport", TTR("(Re)Importing Assets"), p_files.size()));
+	EditorProgress *ep = memnew(EditorProgress(progress_task, TTR("(Re)Importing Assets"), p_files.size()));
 
 	// The method reimport_files runs on the main thread, and if VSync is enabled
 	// or Update Continuously is disabled, Main::Iteration takes longer each frame.
@@ -3432,7 +3433,7 @@ void EditorFileSystem::reimport_files(const Vector<String> &p_files) {
 
 	importing = false;
 
-	ep = memnew(EditorProgress("reimport", TTR("(Re)Importing Assets"), p_files.size()));
+	ep = memnew(EditorProgress(progress_task, TTR("(Re)Importing Assets"), p_files.size()));
 	ep->step(TTR("Executing post-reimport operations..."), 0, true);
 	if (!is_scanning()) {
 		emit_signal(SNAME("filesystem_changed"));

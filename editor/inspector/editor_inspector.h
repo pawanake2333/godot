@@ -732,6 +732,8 @@ class EditorInspector : public ScrollContainer {
 	friend class EditorPropertyResource;
 
 public:
+	static void add_undo_redo_property_change(Object *p_object, const StringName &p_name, const Variant &p_value, bool p_record_primary = true, bool p_snapshot_containers = false, bool p_refresh_all = false);
+	static Error commit_property_changes(Object *p_object, const Dictionary &p_changes);
 	struct PropertyClipboard {
 		enum class Type {
 			EMPTY,
@@ -857,6 +859,8 @@ private:
 
 	void _changed_callback();
 	void _edit_request_change(Object *p_object, const String &p_prop);
+	void _property_edit_completed(Object *p_object, const StringName &p_property, bool p_refresh_all);
+	void _request_property_restart(const StringName &p_property);
 
 	void _keying_changed();
 

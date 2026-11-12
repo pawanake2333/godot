@@ -5502,6 +5502,193 @@ void EditorInspector::_edit_request_change(Object *p_object, const String &p_pro
 	}
 }
 
+void EditorInspector::add_undo_redo_property_change(Object *p_object, const StringName &p_name, const Variant &p_value, bool p_record_primary, bool p_snapshot_containers, bool p_refresh_all) {
+	ERR_FAIL_NULL(p_object);
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	if (p_record_primary) {
+		undo_redo->add_do_property(p_object, p_name, p_value);
+	}
+	bool valid = false;
+	Variant value = p_object->get(p_name, &valid);
+	if (p_snapshot_containers && value.get_type() == Variant::ARRAY) {
+		value = Array(value).duplicate(true);
+	} else if (p_snapshot_containers && value.get_type() == Variant::DICTIONARY) {
+		value = Dictionary(value).duplicate(true);
+	}
+	Variant::Type type = p_value.get_type();
+	if (valid) {
+		if (Object::cast_to<Control>(p_object) && (p_name == "anchors_preset" || p_name == "layout_mode")) {
+			undo_redo->add_undo_method(p_object, "_edit_set_state", Object::cast_to<Control>(p_object)->_edit_get_state());
+		} else if (p_record_primary) {
+			undo_redo->add_undo_property(p_object, p_name, value);
+		}
+		Node *N = Object::cast_to<Node>(p_object);
+		bool double_counting = Object::cast_to<Node>(p_value) == N || Object::cast_to<Node>(value) == N;
+		if (N && !double_counting && (type == Variant::OBJECT || type == Variant::ARRAY || type == Variant::DICTIONARY) && value != p_value) {
+			undo_redo->add_do_method(EditorNode::get_singleton(), "update_node_reference", value, N, true);
+			undo_redo->add_do_method(EditorNode::get_singleton(), "update_node_reference", p_value, N, false);
+			// Perhaps an inefficient way of updating the resource count.
+			// We could go in depth and check which Resource values changed/got removed and which ones stayed the same, but this is more readable at the moment.
+			undo_redo->add_undo_method(EditorNode::get_singleton(), "update_node_reference", p_value, N, true);
+			undo_redo->add_undo_method(EditorNode::get_singleton(), "update_node_reference", value, N, false);
+		}
+	}
+
+	List<StringName> linked_properties;
+	ClassDB::get_linked_properties_info(p_object->get_class_name(), p_name, &linked_properties);
+
+	for (const StringName &linked_prop : linked_properties) {
+		valid = false;
+		Variant undo_value = p_object->get(linked_prop, &valid);
+		if (valid) {
+			undo_redo->add_undo_property(p_object, linked_prop, undo_value);
+		}
+	}
+
+	PackedStringArray linked_properties_dynamic = p_object->call("_get_linked_undo_properties", p_name, p_value);
+	for (int i = 0; i < linked_properties_dynamic.size(); i++) {
+		valid = false;
+		Variant undo_value = p_object->get(linked_properties_dynamic[i], &valid);
+		if (valid) {
+			undo_redo->add_undo_property(p_object, linked_properties_dynamic[i], undo_value);
+		}
+	}
+
+	Variant v_undo_redo = undo_redo;
+	Variant v_p_object = p_object;
+	Variant v_name = p_name;
+	const Vector<Callable> &callbacks = EditorNode::get_editor_data().get_undo_redo_inspector_hook_callback();
+	for (int i = 0; i < callbacks.size(); i++) {
+		const Callable &callback = callbacks[i];
+
+		const Variant *p_arguments[] = { &v_undo_redo, &v_p_object, &v_name, &p_value };
+		Variant return_value;
+		Callable::CallError call_error;
+
+		callback.callp(p_arguments, 4, return_value, call_error);
+		if (call_error.error != Callable::CallError::CALL_OK) {
+			ERR_PRINT("Invalid UndoRedo callback.");
+		}
+	}
+
+	Resource *r = Object::cast_to<Resource>(p_object);
+
+	if (r) {
+		//Setting a Subresource. Since there's possibly multiple Nodes referencing 'r', we need to link them to the Subresource.
+		List<Node *> shared_nodes = EditorNode::get_singleton()->get_resource_node_list(r);
+		for (Node *N : shared_nodes) {
+			if ((type == Variant::OBJECT || type == Variant::ARRAY || type == Variant::DICTIONARY) && value != p_value) {
+				undo_redo->add_do_method(EditorNode::get_singleton(), "update_node_reference", value, N, true);
+				undo_redo->add_do_method(EditorNode::get_singleton(), "update_node_reference", p_value, N, false);
+				// Perhaps an inefficient way of updating the resource count.
+				// We could go in depth and check which Resource values changed/got removed and which ones stayed the same, but this is more readable at the moment.
+				undo_redo->add_undo_method(EditorNode::get_singleton(), "update_node_reference", p_value, N, true);
+				undo_redo->add_undo_method(EditorNode::get_singleton(), "update_node_reference", value, N, false);
+			}
+		}
+		if (String(p_name) == "resource_local_to_scene") {
+			bool prev = p_object->get(p_name);
+			bool next = p_value;
+			if (next) {
+				undo_redo->add_do_method(r, "setup_local_to_scene");
+			}
+			if (prev) {
+				undo_redo->add_undo_method(r, "setup_local_to_scene");
+			}
+		}
+	}
+
+	List<Connection> connections;
+	p_object->get_signal_connection_list(CoreStringName(property_list_changed), &connections);
+	HashSet<EditorInspector *> notified;
+	for (const Connection &connection : connections) {
+		EditorInspector *inspector = ObjectDB::get_instance<EditorInspector>(connection.callable.get_object_id());
+		if (!inspector || inspector->object != p_object || notified.has(inspector)) {
+			continue;
+		}
+		notified.insert(inspector);
+		if (inspector->autoclear && inspector->editor_property_map.has(p_name)) {
+			for (EditorProperty *property : inspector->editor_property_map[p_name]) {
+				if (property->is_checkable()) {
+					property->set_checked(true);
+				}
+			}
+		}
+		undo_redo->add_do_method(inspector, "_property_edit_completed", p_object, p_name, p_refresh_all);
+		undo_redo->add_undo_method(inspector, "_property_edit_completed", p_object, p_name, p_refresh_all);
+	}
+}
+
+void EditorInspector::_property_edit_completed(Object *p_object, const StringName &p_property, bool p_refresh_all) {
+	// Undo may run after the human has selected a different object.
+	if (!p_object || object != p_object) {
+		return;
+	}
+	_edit_request_change(p_object, p_refresh_all ? String() : String(p_property));
+	emit_signal(_prop_edited, p_property);
+	if (editor_property_map.has(p_property)) {
+		for (EditorProperty *property : editor_property_map[p_property]) {
+			property->update_editor_property_status();
+		}
+	}
+}
+
+void EditorInspector::_request_property_restart(const StringName &p_property) {
+	if (restart_request_props.has(p_property)) {
+		emit_signal(SNAME("restart_requested"));
+	}
+}
+
+Error EditorInspector::commit_property_changes(Object *p_object, const Dictionary &p_changes) {
+	ERR_FAIL_NULL_V(p_object, ERR_INVALID_PARAMETER);
+	EditorUndoRedoManager *undo = EditorUndoRedoManager::get_singleton();
+	if (p_changes.is_empty() || undo->is_committing_action()) {
+		return ERR_BUSY;
+	}
+	if (bool(p_object->call("_dont_undo_redo"))) {
+		return ERR_UNAVAILABLE;
+	}
+	List<PropertyInfo> properties;
+	p_object->get_property_list(&properties);
+	for (const Variant &key : p_changes.get_key_list()) {
+		bool editable = false;
+		for (const PropertyInfo &info : properties) {
+			if (info.name == StringName(key)) {
+				editable = (info.usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE)) && !(info.usage & (PROPERTY_USAGE_READ_ONLY | PROPERTY_USAGE_INTERNAL));
+				break;
+			}
+		}
+		if (!editable) {
+			return ERR_INVALID_PARAMETER;
+		}
+	}
+	undo->create_action(TTR("Set Multiple Properties"), UndoRedo::MERGE_DISABLE, p_object);
+	undo->force_fixed_history();
+	for (const Variant &key : p_changes.get_key_list()) {
+		add_undo_redo_property_change(p_object, key, p_changes[key], true, true, true);
+	}
+	const ObjectID target_id = p_object->get_instance_id();
+	undo->commit_action();
+	p_object = ObjectDB::get_instance(target_id);
+	if (!p_object) {
+		return ERR_DOES_NOT_EXIST;
+	}
+	List<Connection> connections;
+	p_object->get_signal_connection_list(CoreStringName(property_list_changed), &connections);
+	HashSet<EditorInspector *> notified;
+	for (const Connection &connection : connections) {
+		EditorInspector *inspector = ObjectDB::get_instance<EditorInspector>(connection.callable.get_object_id());
+		if (!inspector || inspector->object != p_object || notified.has(inspector)) {
+			continue;
+		}
+		notified.insert(inspector);
+		for (const Variant &key : p_changes.get_key_list()) {
+			inspector->_request_property_restart(key);
+		}
+	}
+	return OK;
+}
+
 void EditorInspector::_edit_set(const String &p_name, const Variant &p_value, bool p_refresh_all, const String &p_changed_field) {
 	if (autoclear && editor_property_map.has(p_name)) {
 		for (EditorProperty *E : editor_property_map[p_name]) {
@@ -5531,101 +5718,7 @@ void EditorInspector::_edit_set(const String &p_name, const Variant &p_value, bo
 		emit_signal(_prop_edited, p_name);
 	} else {
 		undo_redo->create_action(vformat(TTR("Set %s"), p_name), UndoRedo::MERGE_ENDS, nullptr, false, mark_unsaved);
-		undo_redo->add_do_property(object, p_name, p_value);
-		bool valid = false;
-		Variant value = object->get(p_name, &valid);
-		Variant::Type type = p_value.get_type();
-		if (valid) {
-			if (Object::cast_to<Control>(object) && (p_name == "anchors_preset" || p_name == "layout_mode")) {
-				undo_redo->add_undo_method(object, "_edit_set_state", Object::cast_to<Control>(object)->_edit_get_state());
-			} else {
-				undo_redo->add_undo_property(object, p_name, value);
-			}
-			Node *N = Object::cast_to<Node>(object);
-			bool double_counting = Object::cast_to<Node>(p_value) == N || Object::cast_to<Node>(value) == N;
-			if (N && !double_counting && (type == Variant::OBJECT || type == Variant::ARRAY || type == Variant::DICTIONARY) && value != p_value) {
-				undo_redo->add_do_method(EditorNode::get_singleton(), "update_node_reference", value, N, true);
-				undo_redo->add_do_method(EditorNode::get_singleton(), "update_node_reference", p_value, N, false);
-				// Perhaps an inefficient way of updating the resource count.
-				// We could go in depth and check which Resource values changed/got removed and which ones stayed the same, but this is more readable at the moment.
-				undo_redo->add_undo_method(EditorNode::get_singleton(), "update_node_reference", p_value, N, true);
-				undo_redo->add_undo_method(EditorNode::get_singleton(), "update_node_reference", value, N, false);
-			}
-		}
-
-		List<StringName> linked_properties;
-		ClassDB::get_linked_properties_info(object->get_class_name(), p_name, &linked_properties);
-
-		for (const StringName &linked_prop : linked_properties) {
-			valid = false;
-			Variant undo_value = object->get(linked_prop, &valid);
-			if (valid) {
-				undo_redo->add_undo_property(object, linked_prop, undo_value);
-			}
-		}
-
-		PackedStringArray linked_properties_dynamic = object->call("_get_linked_undo_properties", p_name, p_value);
-		for (int i = 0; i < linked_properties_dynamic.size(); i++) {
-			valid = false;
-			Variant undo_value = object->get(linked_properties_dynamic[i], &valid);
-			if (valid) {
-				undo_redo->add_undo_property(object, linked_properties_dynamic[i], undo_value);
-			}
-		}
-
-		Variant v_undo_redo = undo_redo;
-		Variant v_object = object;
-		Variant v_name = p_name;
-		const Vector<Callable> &callbacks = EditorNode::get_editor_data().get_undo_redo_inspector_hook_callback();
-		for (int i = 0; i < callbacks.size(); i++) {
-			const Callable &callback = callbacks[i];
-
-			const Variant *p_arguments[] = { &v_undo_redo, &v_object, &v_name, &p_value };
-			Variant return_value;
-			Callable::CallError call_error;
-
-			callback.callp(p_arguments, 4, return_value, call_error);
-			if (call_error.error != Callable::CallError::CALL_OK) {
-				ERR_PRINT("Invalid UndoRedo callback.");
-			}
-		}
-
-		if (p_refresh_all) {
-			undo_redo->add_do_method(this, "_edit_request_change", object, "");
-			undo_redo->add_undo_method(this, "_edit_request_change", object, "");
-		} else {
-			undo_redo->add_do_method(this, "_edit_request_change", object, p_name);
-			undo_redo->add_undo_method(this, "_edit_request_change", object, p_name);
-		}
-
-		Resource *r = Object::cast_to<Resource>(object);
-
-		if (r) {
-			//Setting a Subresource. Since there's possibly multiple Nodes referencing 'r', we need to link them to the Subresource.
-			List<Node *> shared_nodes = EditorNode::get_singleton()->get_resource_node_list(r);
-			for (Node *N : shared_nodes) {
-				if ((type == Variant::OBJECT || type == Variant::ARRAY || type == Variant::DICTIONARY) && value != p_value) {
-					undo_redo->add_do_method(EditorNode::get_singleton(), "update_node_reference", value, N, true);
-					undo_redo->add_do_method(EditorNode::get_singleton(), "update_node_reference", p_value, N, false);
-					// Perhaps an inefficient way of updating the resource count.
-					// We could go in depth and check which Resource values changed/got removed and which ones stayed the same, but this is more readable at the moment.
-					undo_redo->add_undo_method(EditorNode::get_singleton(), "update_node_reference", p_value, N, true);
-					undo_redo->add_undo_method(EditorNode::get_singleton(), "update_node_reference", value, N, false);
-				}
-			}
-			if (String(p_name) == "resource_local_to_scene") {
-				bool prev = object->get(p_name);
-				bool next = p_value;
-				if (next) {
-					undo_redo->add_do_method(r, "setup_local_to_scene");
-				}
-				if (prev) {
-					undo_redo->add_undo_method(r, "setup_local_to_scene");
-				}
-			}
-		}
-		undo_redo->add_do_method(this, "emit_signal", _prop_edited, p_name);
-		undo_redo->add_undo_method(this, "emit_signal", _prop_edited, p_name);
+		add_undo_redo_property_change(object, p_name, p_value, true, false, p_refresh_all);
 		undo_redo->commit_action();
 	}
 
@@ -5649,9 +5742,7 @@ void EditorInspector::_property_changed(const String &p_path, const Variant &p_v
 		changing--;
 	}
 
-	if (restart_request_props.has(p_path)) {
-		emit_signal(SNAME("restart_requested"));
-	}
+	_request_property_restart(p_path);
 }
 
 void EditorInspector::_multiple_properties_changed(const Vector<String> &p_paths, const Array &p_values, bool p_changing) {
@@ -6222,6 +6313,7 @@ EditorInspector *EditorInspector::_get_control_parent_inspector(Control *p_contr
 
 void EditorInspector::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("edit", "object"), &EditorInspector::edit);
+	ClassDB::bind_method("_property_edit_completed", &EditorInspector::_property_edit_completed);
 	ClassDB::bind_method("_edit_request_change", &EditorInspector::_edit_request_change);
 	ClassDB::bind_method("get_selected_path", &EditorInspector::get_selected_path);
 	ClassDB::bind_method("get_edited_object", &EditorInspector::get_edited_object);

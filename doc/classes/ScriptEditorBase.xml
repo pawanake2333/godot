@@ -9,6 +9,10 @@
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="get_edited_resource" qualifiers="const">
+			<return type="Resource" />
+			<description>Returns the resource associated with this editor document. The resource source may differ from unsaved text in [method get_base_editor].</description>
+		</method>
 		<method name="add_syntax_highlighter">
 			<return type="void" />
 			<param index="0" name="highlighter" type="EditorSyntaxHighlighter" />

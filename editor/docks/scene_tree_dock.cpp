@@ -2966,6 +2966,10 @@ void SceneTreeDock::_delete_confirm(bool p_cut) {
 	}
 	undo_redo->commit_action();
 
+	cleanup_node_removal();
+}
+
+void SceneTreeDock::cleanup_node_removal() {
 	// hack, force 2d editor viewport to refresh after deletion
 	if (CanvasItemEditor *editor = CanvasItemEditor::get_singleton()) {
 		editor->get_viewport_control()->queue_redraw();

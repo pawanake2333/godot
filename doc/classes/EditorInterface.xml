@@ -19,6 +19,22 @@
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="start_debugger_server">
+			<return type="int" enum="Error" />
+			<description>Starts the existing debugger server and keeps it available for externally launched development instances. Returns [constant OK] on success.</description>
+		</method>
+		<method name="get_debugger_server_uri" qualifiers="const">
+			<return type="String" />
+			<description>
+				Returns the active editor debugger server URI, or an empty string if no debugger server is active. Development tools can use the URI to attach additional debug instances through the existing debugger protocol.
+			</description>
+		</method>
+		<method name="new_scene">
+			<return type="void" />
+			<description>
+				Creates and activates a new empty scene tab using the editor's normal scene workflow. Existing scene documents are retained. Use [method add_root_node] to give the new scene a root node.
+			</description>
+		</method>
 		<method name="add_root_node">
 			<return type="void" />
 			<param index="0" name="node" type="Node" />
@@ -51,6 +67,20 @@
 			<param index="0" name="resource" type="Resource" />
 			<description>
 				Edits the given [Resource]. If the resource is a [Script] you can also edit it with [method edit_script] to specify the line and column position.
+			</description>
+		</method>
+		<method name="is_editor_ready" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns whether the editor has entered its scene tree and received its initial filesystem scan. Automation should wait for this before inspecting restored documents.
+			</description>
+		</method>
+		<method name="is_scene_node_inherited" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="scene_root" type="Node" />
+			<param index="1" name="node" type="Node" />
+			<description>
+				Returns whether [param node] belongs to the inherited base state of [param scene_root]. The node must be the root or its descendant. This uses the open document state, including unsaved inherited scenes.
 			</description>
 		</method>
 		<method name="edit_script">
@@ -109,6 +139,37 @@
 				Returns the language currently used for the editor interface.
 			</description>
 		</method>
+		<method name="clear_editor_output">
+			<return type="Dictionary" />
+			<param index="0" name="scope" type="String" default="&quot;panel&quot;" />
+			<param index="1" name="through_cursor" type="int" default="-1" />
+			<description>
+				Clears the Output panel, its separate diagnostic history, or both. [param scope] is [code]panel[/code], [code]diagnostics[/code], or [code]all[/code]. Panel clearing resets its messages, counters, and warning/error icon without changing diagnostics. Diagnostic clearing removes retained records through [param through_cursor], preserving newer records. A negative cursor selects the current latest record.
+				Diagnostic cursors remain monotonic. The history generation increments on explicit diagnostic clearing, and subsequent log snapshots report [code]history_generation[/code] and [code]cleared_through_cursor[/code]. Returns the updated Output state and cleared scopes; invalid arguments return [code]error[/code] and [code]message[/code] instead.
+			</description>
+		</method>
+		<method name="configure_editor_output">
+			<return type="int" enum="Error" />
+			<param index="0" name="options" type="Dictionary" />
+			<description>
+				Configures the existing Output dock. Optional keys are [code]visible[/code] and [code]collapse[/code] (bool), [code]search[/code] (a string up to 1024 characters), and [code]levels[/code] (an Array of strings selected from [code]info[/code], [code]error[/code], [code]warning[/code], and [code]editor[/code]). Rich output shares the info filter. An empty levels array hides all message types. Invalid options are rejected before changing the dock. These display settings do not filter or clear diagnostic history.
+			</description>
+		</method>
+		<method name="get_editor_output_state" qualifiers="const">
+			<return type="Dictionary" />
+			<description>
+				Returns the Output dock visibility, active levels, search text, duplicate collapsing, per-type message counts, stored rows, line limit, displayed character count, display revision, and separate diagnostic retention state. Counts refer to received panel messages, independent of its display filters; they do not represent the Debugger dock's error list.
+			</description>
+		</method>
+		<method name="read_editor_output" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="offset" type="int" default="0" />
+			<param index="1" name="max_chars" type="int" default="16384" />
+			<description>
+				Reads a range of the Output panel's displayed plain text after search, type filters, duplicate collapsing, and line limits. Offsets count Unicode characters. [param max_chars] must be between 1 and 65536. The displayed buffer must not exceed 1048576 characters; narrow its filters before reading larger output.
+				Returns [code]text[/code], [code]next_offset[/code], [code]total_characters[/code], [code]has_more[/code], and [code]revision[/code]. Concurrent output changes invalidate pagination; callers should compare revisions. Invalid ranges or excessive buffers return [code]error[/code] and [code]message[/code].
+			</description>
+		</method>
 		<method name="get_editor_log" qualifiers="const">
 			<return type="Dictionary" />
 			<param index="0" name="cursor" type="int" default="0" />
@@ -117,6 +178,7 @@
 				Returns Output messages after [param cursor], independent of Output filters, repeated-message collapsing, and clearing the panel. Retains the latest 2048 entries, with each message limited to 16384 characters. [param max_entries] must be between 1 and 2048.
 				The result contains [code]entries[/code], [code]next_cursor[/code], [code]latest_cursor[/code], [code]oldest_cursor[/code], [code]dropped[/code], and [code]has_more[/code]. Each entry contains [code]cursor[/code], [code]timestamp_msec[/code], [code]type[/code], and [code]message[/code]. Message types are 0 (standard), 1 (error), 2 (rich text), 3 (warning), and 4 (editor). This includes editor messages and output forwarded from debug games.
 				Cursors belong to one editor process. A negative cursor or one beyond [code]latest_cursor[/code] returns an empty dictionary.
+				Explicit diagnostic clearing through [method clear_editor_output] preserves cursor numbering and reports [code]history_generation[/code] and [code]cleared_through_cursor[/code]. Panel-only clearing does not change these fields.
 			</description>
 		</method>
 		<method name="get_editor_main_screen" qualifiers="const">
@@ -550,6 +612,79 @@
 			<return type="void" />
 			<description>
 				Stops the scene that is currently playing.
+			</description>
+		</method>
+		<method name="is_scene_class">
+			<return type="bool" />
+			<param index="0" name="class" type="StringName" />
+			<description>
+				Returns whether a class belongs to the project API instead of the editor API. Check instantiability and the required base class separately.
+			</description>
+		</method>
+		<method name="is_resource_read_only">
+			<return type="bool" />
+			<param index="0" name="resource" type="Resource" />
+			<description>
+				Uses the native editor rules for imported and foreign built-in resources.
+			</description>
+		</method>
+		<method name="add_undo_redo_property_change">
+			<return type="void" />
+			<param index="0" name="object" type="Object" />
+			<param index="1" name="name" type="StringName" />
+			<param index="2" name="value" type="Variant" />
+			<param index="3" name="record_primary" type="bool" default="true" />
+			<description>
+				Records a property change in an existing editor undo action using the Inspector implementation, including linked properties, resource references and plugin hooks. If [param record_primary] is false, the caller supplies the primary property operations. Does not change the Inspector selection.
+			</description>
+		</method>
+		<method name="add_scene_node_path_changes">
+			<return type="void" />
+			<param index="0" name="scene_root" type="Node" />
+			<param index="1" name="paths" type="Dictionary" />
+			<description>
+				Records the native SceneTreeDock reference updates in an existing undo action. Keys are existing scene nodes; values are final absolute NodePaths or empty paths for deleted nodes. The scene must be active. Uses the same animation autorename preference as manual editing.
+			</description>
+		</method>
+		<method name="cleanup_scene_node_removal">
+			<return type="void" />
+			<description>
+				Refreshes selection history and editor docks using the same cleanup as manual scene-node deletion.
+			</description>
+		</method>
+		<method name="get_node_persistent_groups">
+			<return type="PackedStringArray" />
+			<param index="0" name="node" type="Node" />
+			<description>
+				Returns only persistent groups, allowing editor undo actions to preserve transient group membership.
+			</description>
+		</method>
+		<method name="save_resource_in_path">
+			<return type="int" />
+			<param index="0" name="resource" type="Resource" />
+			<param index="1" name="path" type="String" />
+			<description>
+				Saves through the native editor notifications and resource bookkeeping. Returns [constant ERR_ALREADY_IN_USE] if another cached resource owns the path. The caller must handle document conflicts before saving.
+			</description>
+		</method>
+		<method name="get_unsaved_editor_state">
+			<return type="Dictionary" />
+			<description>
+				Returns global_history_unsaved and unsaved non-script editor plugin messages in plugins. Scene and script documents have their own status APIs.
+			</description>
+		</method>
+		<method name="quit_editor">
+			<return type="void" />
+			<description>
+				Stops the project and exits through native editor cleanup, including layout save and plugin unloading. The caller must resolve unsaved-document policy before calling this method. Schedule it deferred when calling from a plugin being unloaded.
+			</description>
+		</method>
+		<method name="edit_inspector_properties">
+			<return type="int" enum="Error" />
+			<param index="0" name="object" type="Object" />
+			<param index="1" name="changes" type="Dictionary" />
+			<description>
+				Commits one property transaction through the native Inspector command layer. Shares linked-property undo, resource reference tracking, plugin hooks, and edit-completion signals with manual Inspector edits. Inspectors currently editing the target are notified without changing the human selection. Returns an error for read-only properties, busy history, or objects that disable undo. Callers must validate target ownership and values before calling.
 			</description>
 		</method>
 	</methods>

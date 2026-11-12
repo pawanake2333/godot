@@ -821,7 +821,7 @@ public:
 	void edit_node(Node *p_node);
 	void edit_resource(const Ref<Resource> &p_resource);
 
-	void save_resource_in_path(const Ref<Resource> &p_resource, const String &p_path);
+	Error save_resource_in_path(const Ref<Resource> &p_resource, const String &p_path);
 	void save_resource(const Ref<Resource> &p_resource);
 	void save_resource_as(const Ref<Resource> &p_resource, const String &p_at_path = String());
 	bool is_resource_internal_to_scene(Ref<Resource> p_resource);
@@ -1050,6 +1050,7 @@ public:
 	bool validate_custom_directory();
 	void run_editor_script(const Ref<Script> &p_script);
 	bool is_scene_unsaved(int p_idx);
+	void quit_editor();
 };
 
 struct EditorProgressBG {

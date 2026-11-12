@@ -239,7 +239,7 @@ void ScriptEditor::_set_breakpoint(Ref<RefCounted> p_script, int p_line, bool p_
 		}
 
 		// Handle closed.
-		Dictionary state = script_editor_cache->get_value(scr->get_path(), "state");
+		Dictionary state = script_editor_cache->get_value(scr->get_path(), "state", Dictionary());
 		Array breakpoints;
 		if (state.has("breakpoints")) {
 			breakpoints = state["breakpoints"];
@@ -3784,6 +3784,7 @@ void ScriptEditor::_bind_methods() {
 	ClassDB::bind_method("get_current_editor", &ScriptEditor::_get_current_editor);
 	ClassDB::bind_method("get_open_script_editors", &ScriptEditor::_get_open_script_editors);
 	ClassDB::bind_method("get_breakpoints", &ScriptEditor::_get_breakpoints);
+	ClassDB::bind_method(D_METHOD("set_breakpoint", "script", "line", "enabled"), &ScriptEditor::_set_breakpoint);
 
 	ClassDB::bind_method(D_METHOD("register_syntax_highlighter", "syntax_highlighter"), &ScriptEditor::register_syntax_highlighter);
 	ClassDB::bind_method(D_METHOD("unregister_syntax_highlighter", "syntax_highlighter"), &ScriptEditor::unregister_syntax_highlighter);

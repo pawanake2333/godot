@@ -1733,11 +1733,11 @@ void EditorNode::edit_resource(const Ref<Resource> &p_resource) {
 	InspectorDock::get_singleton()->edit_resource(p_resource);
 }
 
-void EditorNode::save_resource_in_path(const Ref<Resource> &p_resource, const String &p_path) {
+Error EditorNode::save_resource_in_path(const Ref<Resource> &p_resource, const String &p_path) {
 	editor_data.apply_changes_in_editors();
 
 	if (saving_resources_in_path.has(p_resource)) {
-		return;
+		return ERR_BUSY;
 	}
 	saving_resources_in_path.insert(p_resource);
 
@@ -1757,7 +1757,7 @@ void EditorNode::save_resource_in_path(const Ref<Resource> &p_resource, const St
 		}
 
 		saving_resources_in_path.erase(p_resource);
-		return;
+		return err;
 	}
 
 	Ref<Resource> prev_resource = ResourceCache::get_ref(p_path);
@@ -1785,6 +1785,7 @@ void EditorNode::save_resource_in_path(const Ref<Resource> &p_resource, const St
 			}
 		}
 	}
+	return OK;
 }
 
 void EditorNode::save_resource(const Ref<Resource> &p_resource) {
@@ -2253,6 +2254,11 @@ void EditorNode::_find_node_types(Node *p_node, int &count_2d, int &count_3d) {
 }
 
 void EditorNode::_save_scene_with_preview(String p_file, int p_idx) {
+	if (DisplayServer::get_singleton()->get_name() == "headless") {
+		_save_scene(p_file, p_idx);
+		return;
+	}
+
 	save_scene_progress = memnew(EditorProgress("save", TTR("Saving Scene"), 4));
 
 	if (editor_data.get_edited_scene_root() != nullptr) {
@@ -4203,6 +4209,11 @@ int EditorNode::_next_unsaved_scene(bool p_valid_filename, int p_start) {
 		}
 	}
 	return -1;
+}
+
+void EditorNode::quit_editor() {
+	project_run_bar->stop_playing();
+	_exit_editor(EXIT_SUCCESS);
 }
 
 void EditorNode::_exit_editor(int p_exit_code) {

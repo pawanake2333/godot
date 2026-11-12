@@ -109,6 +109,22 @@ public:
 	EditorToaster *get_editor_toaster() const;
 	EditorUndoRedoManager *get_editor_undo_redo() const;
 	Dictionary get_editor_log(int64_t p_cursor = 0, int p_max_entries = 200) const;
+	Dictionary get_editor_output_state() const;
+	Error configure_editor_output(const Dictionary &p_options);
+	Dictionary clear_editor_output(const String &p_scope = "panel", int64_t p_through_cursor = -1);
+	Dictionary read_editor_output(int p_offset = 0, int p_max_chars = 16384) const;
+	bool is_editor_ready() const;
+	bool is_scene_class(const StringName &p_class) const;
+	bool is_resource_read_only(const Ref<Resource> &p_resource) const;
+	bool is_scene_node_inherited(Node *p_scene_root, Node *p_node) const;
+	void add_scene_node_path_changes(Node *p_scene_root, const Dictionary &p_paths);
+	void cleanup_scene_node_removal();
+	PackedStringArray get_node_persistent_groups(Node *p_node) const;
+	Error edit_inspector_properties(Object *p_object, const Dictionary &p_changes);
+	void add_undo_redo_property_change(Object *p_object, const StringName &p_name, const Variant &p_value, bool p_record_primary = true);
+	Error save_resource_in_path(const Ref<Resource> &p_resource, const String &p_path);
+	Dictionary get_unsaved_editor_state() const;
+	void quit_editor();
 
 	Vector<Ref<Texture2D>> make_mesh_previews(const Vector<Ref<Mesh>> &p_meshes, Vector<Transform3D> *p_transforms, int p_preview_size);
 	void make_scene_preview(const String &p_path, Node *p_scene, int p_preview_size);
@@ -186,6 +202,9 @@ public:
 	Node *get_edited_scene_root() const;
 
 	void add_root_node(Node *p_node);
+	void new_scene();
+	String get_debugger_server_uri() const;
+	Error start_debugger_server();
 
 	Error save_scene();
 	void save_scene_as(const String &p_scene, bool p_with_preview = true);

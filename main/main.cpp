@@ -249,6 +249,7 @@ static int init_screen = DisplayServerEnums::SCREEN_PRIMARY;
 static bool init_fullscreen = false;
 static bool init_maximized = false;
 static bool init_windowed = false;
+static bool init_hidden = false;
 static bool init_always_on_top = false;
 static bool init_use_custom_pos = false;
 static bool init_use_custom_screen = false;
@@ -633,6 +634,7 @@ void Main::print_help(const char *p_binary) {
 
 	print_help_title("Display options");
 	print_help_option("-f, --fullscreen", "Request fullscreen mode.\n");
+	print_help_option("--hidden", "Keep the main OS window hidden while rendering offscreen. Requires a graphical display driver.\n");
 	print_help_option("-m, --maximized", "Request a maximized window.\n");
 	print_help_option("-w, --windowed", "Request windowed mode.\n");
 	print_help_option("-t, --always-on-top", "Request an always-on-top window.\n");
@@ -1337,6 +1339,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 				OS::get_singleton()->print("Missing rendering driver argument, aborting.\n");
 				goto error;
 			}
+		} else if (arg == "--hidden") {
+			init_hidden = true;
+			main_args.push_back(arg);
 		} else if (arg == "-f" || arg == "--fullscreen") { // force fullscreen
 			init_fullscreen = true;
 			window_mode = DisplayServerEnums::WINDOW_MODE_FULLSCREEN;
@@ -3455,7 +3460,7 @@ Error Main::setup2(bool p_show_boot_logo) {
 			}
 		}
 #endif
-		if (display_server->has_feature(DisplayServerEnums::FEATURE_SUBWINDOWS)) {
+		if (!init_hidden && display_server->has_feature(DisplayServerEnums::FEATURE_SUBWINDOWS)) {
 			display_server->show_window(DisplayServerEnums::MAIN_WINDOW_ID);
 		}
 
@@ -3925,7 +3930,7 @@ void Main::setup_boot_logo() {
 #if !defined(TOOLS_ENABLED) && defined(WEB_ENABLED)
 	bool show_logo = false;
 #else
-	bool show_logo = true;
+	bool show_logo = !init_hidden;
 #endif
 
 	if (show_logo) { //boot logo!
@@ -5082,7 +5087,7 @@ bool Main::iteration() {
 								 DisplayServer::get_singleton()->has_additional_outputs()) &&
 			RenderingServer::get_singleton()->is_render_loop_enabled();
 
-	if (wants_present || has_pending_resources_for_processing) {
+	if (wants_present || has_pending_resources_for_processing || (init_hidden && RenderingServer::get_singleton()->is_render_loop_enabled())) {
 		wants_present |= force_redraw_requested;
 		if ((!force_redraw_requested) && OS::get_singleton()->is_in_low_processor_usage_mode()) {
 			if (RenderingServer::get_singleton()->has_changed()) {

@@ -46,6 +46,10 @@ private:
 	ObjectID debugger_id;
 
 	void _breaked(bool p_really_did, bool p_can_debug, const String &p_message, bool p_has_stackdump);
+	void _profiler_frame(const String &p_kind, const Array &p_data);
+	void _stack_dump(const Array &p_data);
+	void _stack_frame_vars(int p_count);
+	void _stack_frame_var(const Array &p_data);
 	void _started();
 	void _stopped();
 
@@ -59,9 +63,12 @@ public:
 	void remove_session_tab(Control *p_tab);
 	void send_message(const String &p_message, const Array &p_args = Array());
 	void toggle_profiler(const String &p_profiler, bool p_enable, const Array &p_data = Array());
+	Dictionary get_profiler_state(const String &p_profiler) const;
 	bool is_breaked();
 	bool is_debuggable();
 	bool is_active();
+	Error debug_control(const String &p_action);
+	bool request_stack_variables(int p_frame);
 
 	void set_breakpoint(const String &p_path, int p_line, bool p_enabled);
 

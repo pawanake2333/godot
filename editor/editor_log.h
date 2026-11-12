@@ -130,6 +130,9 @@ private:
 	static constexpr int AUTOMATION_LOG_CAPACITY = 2048;
 	Vector<Dictionary> automation_messages;
 	int64_t automation_sequence = 0;
+	int64_t automation_history_start = 1;
+	int64_t automation_history_generation = 0;
+	int64_t output_revision = 0;
 	// Maps MessageTypes to LogFilters for convenient access and storage (don't need 1 member per filter).
 	HashMap<MessageType, LogFilter *> type_filter_map;
 
@@ -164,7 +167,7 @@ private:
 	void _set_filter_active(bool p_active, MessageType p_message_type);
 	void _search_changed(const String &p_text);
 
-	void _process_message(const String &p_msg, MessageType p_type, bool p_clear);
+	void _process_message(const String &p_msg, MessageType p_type, bool p_clear, const Dictionary &p_metadata = Dictionary());
 	void _reset_message_counts();
 	void _set_dock_tab_icon(Ref<Texture2D> p_icon);
 
@@ -183,8 +186,13 @@ protected:
 
 public:
 	void add_message(const String &p_msg, MessageType p_type = MSG_TYPE_STD);
+	void add_debugger_message(const String &p_msg, MessageType p_type, const Dictionary &p_metadata);
 	void record_automation_message(const String &p_msg, MessageType p_type, const Dictionary &p_metadata = Dictionary());
 	Dictionary get_message_snapshot(int64_t p_cursor, int p_max_entries) const;
+	Dictionary get_output_state() const;
+	Error configure_output(const Dictionary &p_options);
+	Dictionary clear_output(const String &p_scope, int64_t p_through_cursor);
+	Dictionary read_output(int p_offset, int p_max_chars) const;
 	void register_undo_redo(UndoRedo *p_undo_redo);
 	void deinit();
 

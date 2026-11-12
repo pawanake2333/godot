@@ -37,9 +37,63 @@
 void EditorDebuggerSession::_breaked(bool p_really_did, bool p_can_debug, const String &p_message, bool p_has_stackdump) {
 	if (p_really_did) {
 		emit_signal(SNAME("breaked"), p_can_debug);
+		emit_signal(SNAME("break_reason"), p_message);
 	} else {
 		emit_signal(SNAME("continued"));
 	}
+}
+
+void EditorDebuggerSession::_profiler_frame(const String &p_kind, const Array &p_data) {
+	emit_signal(SNAME("profiler_frame"), p_kind, p_data);
+}
+
+void EditorDebuggerSession::_stack_dump(const Array &p_data) {
+	emit_signal(SNAME("stack_dump"), p_data);
+}
+
+void EditorDebuggerSession::_stack_frame_vars(int p_count) {
+	emit_signal(SNAME("stack_frame_variables_started"), p_count);
+}
+
+void EditorDebuggerSession::_stack_frame_var(const Array &p_data) {
+	emit_signal(SNAME("stack_frame_variable"), p_data);
+}
+
+Error EditorDebuggerSession::debug_control(const String &p_action) {
+	ERR_FAIL_NULL_V(debugger, ERR_UNCONFIGURED);
+	if (!debugger->is_session_active()) {
+		return ERR_UNAVAILABLE;
+	}
+	if (p_action == "pause") {
+		if (debugger->is_breaked()) {
+			return ERR_BUSY;
+		}
+		debugger->debug_break();
+		return OK;
+	}
+	if (!debugger->is_breaked()) {
+		return ERR_BUSY;
+	}
+	if (p_action == "continue") {
+		debugger->debug_continue();
+	} else if (p_action == "step_into") {
+		debugger->debug_step();
+	} else if (p_action == "step_over") {
+		debugger->debug_next();
+	} else if (p_action == "step_out") {
+		debugger->debug_out();
+	} else {
+		return ERR_INVALID_PARAMETER;
+	}
+	return OK;
+}
+
+bool EditorDebuggerSession::request_stack_variables(int p_frame) {
+	ERR_FAIL_NULL_V(debugger, false);
+	if (!debugger->is_breaked()) {
+		return false;
+	}
+	return debugger->request_stack_dump(p_frame);
 }
 
 void EditorDebuggerSession::_started() {
@@ -53,6 +107,7 @@ void EditorDebuggerSession::_stopped() {
 void EditorDebuggerSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("send_message", "message", "data"), &EditorDebuggerSession::send_message, DEFVAL(Array()));
 	ClassDB::bind_method(D_METHOD("toggle_profiler", "profiler", "enable", "data"), &EditorDebuggerSession::toggle_profiler, DEFVAL(Array()));
+	ClassDB::bind_method(D_METHOD("get_profiler_state", "profiler"), &EditorDebuggerSession::get_profiler_state);
 	ClassDB::bind_method(D_METHOD("is_breaked"), &EditorDebuggerSession::is_breaked);
 	ClassDB::bind_method(D_METHOD("is_debuggable"), &EditorDebuggerSession::is_debuggable);
 	ClassDB::bind_method(D_METHOD("is_active"), &EditorDebuggerSession::is_active);
@@ -60,6 +115,13 @@ void EditorDebuggerSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("remove_session_tab", "control"), &EditorDebuggerSession::remove_session_tab);
 	ClassDB::bind_method(D_METHOD("set_breakpoint", "path", "line", "enabled"), &EditorDebuggerSession::set_breakpoint);
 
+	ClassDB::bind_method(D_METHOD("debug_control", "action"), &EditorDebuggerSession::debug_control);
+	ClassDB::bind_method(D_METHOD("request_stack_variables", "frame"), &EditorDebuggerSession::request_stack_variables);
+	ADD_SIGNAL(MethodInfo("profiler_frame", PropertyInfo(Variant::STRING, "kind"), PropertyInfo(Variant::ARRAY, "data")));
+	ADD_SIGNAL(MethodInfo("stack_dump", PropertyInfo(Variant::ARRAY, "frames")));
+	ADD_SIGNAL(MethodInfo("stack_frame_variables_started", PropertyInfo(Variant::INT, "count")));
+	ADD_SIGNAL(MethodInfo("stack_frame_variable", PropertyInfo(Variant::ARRAY, "data")));
+	ADD_SIGNAL(MethodInfo("break_reason", PropertyInfo(Variant::STRING, "message")));
 	ADD_SIGNAL(MethodInfo("started"));
 	ADD_SIGNAL(MethodInfo("stopped"));
 	ADD_SIGNAL(MethodInfo("breaked", PropertyInfo(Variant::BOOL, "can_debug")));
@@ -88,6 +150,11 @@ void EditorDebuggerSession::toggle_profiler(const String &p_profiler, bool p_ena
 	debugger->toggle_profiler(p_profiler, p_enable, p_data);
 }
 
+Dictionary EditorDebuggerSession::get_profiler_state(const String &p_profiler) const {
+	ERR_FAIL_NULL_V(debugger, Dictionary());
+	return debugger->get_profiler_state(p_profiler);
+}
+
 bool EditorDebuggerSession::is_breaked() {
 	ERR_FAIL_NULL_V_MSG(debugger, false, "Plugin is not attached to debugger.");
 	return debugger->is_breaked();
@@ -112,6 +179,10 @@ void EditorDebuggerSession::detach_debugger() {
 	if (!debugger || !ObjectDB::get_instance(debugger_id)) {
 		return;
 	}
+	debugger->disconnect("profiler_frame", callable_mp(this, &EditorDebuggerSession::_profiler_frame));
+	debugger->disconnect("stack_dump", callable_mp(this, &EditorDebuggerSession::_stack_dump));
+	debugger->disconnect("stack_frame_vars", callable_mp(this, &EditorDebuggerSession::_stack_frame_vars));
+	debugger->disconnect("stack_frame_var", callable_mp(this, &EditorDebuggerSession::_stack_frame_var));
 	debugger->disconnect("started", callable_mp(this, &EditorDebuggerSession::_started));
 	debugger->disconnect("stopped", callable_mp(this, &EditorDebuggerSession::_stopped));
 	debugger->disconnect("breaked", callable_mp(this, &EditorDebuggerSession::_breaked));
@@ -126,6 +197,10 @@ EditorDebuggerSession::EditorDebuggerSession(ScriptEditorDebugger *p_debugger) {
 	ERR_FAIL_NULL(p_debugger);
 	debugger = p_debugger;
 	debugger_id = p_debugger->get_instance_id();
+	debugger->connect("profiler_frame", callable_mp(this, &EditorDebuggerSession::_profiler_frame));
+	debugger->connect("stack_dump", callable_mp(this, &EditorDebuggerSession::_stack_dump));
+	debugger->connect("stack_frame_vars", callable_mp(this, &EditorDebuggerSession::_stack_frame_vars));
+	debugger->connect("stack_frame_var", callable_mp(this, &EditorDebuggerSession::_stack_frame_var));
 	debugger->connect("started", callable_mp(this, &EditorDebuggerSession::_started));
 	debugger->connect("stopped", callable_mp(this, &EditorDebuggerSession::_stopped));
 	debugger->connect("breaked", callable_mp(this, &EditorDebuggerSession::_breaked));

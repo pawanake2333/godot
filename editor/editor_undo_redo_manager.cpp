@@ -68,12 +68,12 @@ int EditorUndoRedoManager::get_history_id_for_object(Object *p_object) const {
 	}
 
 	if (Node *node = Object::cast_to<Node>(p_object)) {
-		Node *edited_scene = EditorNode::get_singleton()->get_edited_scene();
-
-		if (edited_scene && (node == edited_scene || edited_scene->is_ancestor_of(node))) {
-			int idx = EditorNode::get_editor_data().get_current_edited_scene_history_id();
-			if (idx > 0) {
-				history_id = idx;
+		EditorData &data = EditorNode::get_editor_data();
+		for (int i = 0; i < data.get_edited_scene_count(); i++) {
+			Node *scene = data.get_edited_scene_root(i);
+			if (scene && (node == scene || scene->is_ancestor_of(node))) {
+				history_id = data.get_scene_history_id(i);
+				break;
 			}
 		}
 	}
@@ -317,12 +317,21 @@ bool EditorUndoRedoManager::undo() {
 bool EditorUndoRedoManager::undo_history(int p_id) {
 	ERR_FAIL_COND_V(p_id == INVALID_HISTORY, false);
 	History &history = get_or_create_history(p_id);
+	if (is_committing || history.undo_redo->is_committing_action() || history.undo_stack.is_empty()) {
+		return false;
+	}
 
 	Action action = history.undo_stack.back()->get();
 	history.undo_stack.pop_back();
 	history.redo_stack.push_back(action);
 
+	is_committing = true;
 	bool success = history.undo_redo->undo();
+	is_committing = false;
+	if (!success) {
+		history.redo_stack.pop_back();
+		history.undo_stack.push_back(action);
+	}
 	if (success) {
 		emit_signal(SNAME("version_changed"));
 	}
@@ -370,12 +379,21 @@ bool EditorUndoRedoManager::redo() {
 bool EditorUndoRedoManager::redo_history(int p_id) {
 	ERR_FAIL_COND_V(p_id == INVALID_HISTORY, false);
 	History &history = get_or_create_history(p_id);
+	if (is_committing || history.undo_redo->is_committing_action() || history.redo_stack.is_empty()) {
+		return false;
+	}
 
 	Action action = history.redo_stack.back()->get();
 	history.redo_stack.pop_back();
 	history.undo_stack.push_back(action);
 
+	is_committing = true;
 	bool success = history.undo_redo->redo();
+	is_committing = false;
+	if (!success) {
+		history.undo_stack.pop_back();
+		history.redo_stack.push_back(action);
+	}
 	if (success) {
 		emit_signal(SNAME("version_changed"));
 	}
@@ -567,6 +585,12 @@ void EditorUndoRedoManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("add_undo_reference", "object"), &EditorUndoRedoManager::add_undo_reference);
 
 	ClassDB::bind_method(D_METHOD("get_object_history_id", "object"), &EditorUndoRedoManager::get_history_id_for_object);
+	ClassDB::bind_method(D_METHOD("has_undo"), &EditorUndoRedoManager::has_undo);
+	ClassDB::bind_method(D_METHOD("has_redo"), &EditorUndoRedoManager::has_redo);
+	ClassDB::bind_method(D_METHOD("undo"), &EditorUndoRedoManager::undo);
+	ClassDB::bind_method(D_METHOD("redo"), &EditorUndoRedoManager::redo);
+	ClassDB::bind_method(D_METHOD("undo_history", "id"), &EditorUndoRedoManager::undo_history);
+	ClassDB::bind_method(D_METHOD("redo_history", "id"), &EditorUndoRedoManager::redo_history);
 	ClassDB::bind_method(D_METHOD("get_history_undo_redo", "id"), &EditorUndoRedoManager::get_history_undo_redo);
 	ClassDB::bind_method(D_METHOD("clear_history", "id", "increase_version"), &EditorUndoRedoManager::clear_history, DEFVAL(INVALID_HISTORY), DEFVAL(true));
 

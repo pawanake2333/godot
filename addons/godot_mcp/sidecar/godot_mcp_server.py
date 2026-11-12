@@ -4,259 +4,49 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import copy
 import base64
 import json
 import socket
+import signal
+import threading
 import sys
 from pathlib import Path
 from typing import Any
 
-SERVER_INFO = {"name": "godot-mcp", "version": "0.2.0"}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mcp_services import Services, LOCAL_TOOLS
+from contracts import configure_catalog, validate_arguments, validate_json_budget
+from editor_catalog import EDITOR_TOOLS
+from rpc_connection import RPCConnection
+from stdio_transport import serve as serve_stdio
+from tool_registry import ToolRegistry
+from package_info import VERSION, PROTOCOL, source_identity
+from tool_policy import select_tools
+
+SERVER_INFO = {"name": "godot-mcp", "version": VERSION}
 SUPPORTED_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 
-TOOLS = [
-    {
-        "name": "godot_get_state",
-        "description": "Get the current Godot editor, project, scene, and play state.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    {
-        "name": "godot_get_open_scenes",
-        "description": "List open and unsaved editor scenes and identify the active scene.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    {
-        "name": "godot_close_scene",
-        "description": "Close an editor scene by path before modifying its file. Unsaved scenes require force=true.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "scene_path": {"type": "string"},
-                "force": {"type": "boolean", "default": False},
-            },
-            "required": ["scene_path"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_open_scene",
-        "description": "Open an editor scene by path, or activate its tab if it is already open.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"scene_path": {"type": "string"}},
-            "required": ["scene_path"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_list_commands",
-        "description": "List editor command keys allowed by the addon's fixed safety policy.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    {
-        "name": "godot_run_command",
-        "description": "Execute one allowlisted Godot editor command by stable key.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"key": {"type": "string"}},
-            "required": ["key"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_play",
-        "description": "Run the main, current, or explicitly specified scene.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "mode": {"type": "string", "enum": ["main", "current", "custom"], "default": "main"},
-                "scene_path": {"type": "string"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_stop",
-        "description": "Stop the game currently launched by the editor.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    {
-        "name": "godot_capture",
-        "description": "Capture the running game, including embedded, floating, or separate windows, and return a PNG image.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    {
-        "name": "godot_get_edited_scene",
-        "description": "Get a bounded tree snapshot of the scene currently edited in Godot.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"max_depth": {"type": "integer", "minimum": 0, "maximum": 64, "default": 16}},
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_inspect_editor_node",
-        "description": "Read selected properties from a node in the edited scene.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "node_path": {"type": "string"},
-                "properties": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["node_path"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_set_editor_property",
-        "description": "Set an edited scene node property through Godot Undo/Redo.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "node_path": {"type": "string"},
-                "property": {"type": "string"},
-                "value": {},
-            },
-            "required": ["node_path", "property", "value"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_save_scene",
-        "description": "Save the currently edited scene.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    {
-        "name": "godot_get_runtime_tree",
-        "description": "Get a bounded scene tree snapshot from the running debug game.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "root_path": {"type": "string"},
-                "max_depth": {"type": "integer", "minimum": 0, "maximum": 64, "default": 16},
-                "max_nodes": {"type": "integer", "minimum": 1, "maximum": 4096, "default": 1024},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_inspect_runtime_object",
-        "description": "Inspect properties of a running object by node path or instance ID.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "node_path": {"type": "string"},
-                "instance_id": {"type": "integer"},
-                "properties": {"type": "array", "items": {"type": "string"}},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_set_runtime_property",
-        "description": "Set a property on a running object by node path or instance ID.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "node_path": {"type": "string"},
-                "instance_id": {"type": "integer"},
-                "property": {"type": "string"},
-                "value": {},
-            },
-            "required": ["property", "value"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_send_input_action",
-        "description": "Press or release an InputMap action in the running debug game.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string"},
-                "pressed": {"type": "boolean", "default": True},
-                "strength": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
-            },
-            "required": ["action"],
-            "additionalProperties": False,
-        },
-    },
-]
-
-TOOLS.extend([
-    {
-        "name": "godot_create_editor_node",
-        "description": "Create a native or scripted child node in the edited scene through Undo/Redo.",
-        "inputSchema": {
-            "type": "object", "required": ["name"],
-            "properties": {
-                "parent_path": {"type": "string", "default": "."},
-                "name": {"type": "string", "minLength": 1},
-                "type": {"type": "string", "default": "Node"},
-                "script_path": {"type": "string"},
-                "properties": {"type": "object"},
-            }, "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_delete_editor_node",
-        "description": "Delete an owned edited-scene node through Undo/Redo; preserves subtree owners on undo.",
-        "inputSchema": {
-            "type": "object", "required": ["node_path"],
-            "properties": {"node_path": {"type": "string", "minLength": 1}},
-            "additionalProperties": False,
-        },
-    },
-    *[
-        {"name": name, "description": description,
-         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}
-        for name, description in [
-            ("godot_editor_undo", "Undo the latest action in the edited scene's history."),
-            ("godot_editor_redo", "Redo the latest action in the edited scene's history."),
-            ("godot_reload_project", "Wait for a project filesystem scan, then reload open scripts using editor conflict handling."),
-        ]
-    ],
-    {
-        "name": "godot_get_logs",
-        "description": "Read bounded editor Output and debug-game diagnostics after a cursor; includes runtime source and stack.",
-        "inputSchema": {
-            "type": "object", "properties": {
-                "cursor": {"type": "integer", "minimum": 0, "default": 0},
-                "max_entries": {"type": "integer", "minimum": 1, "maximum": 2048, "default": 200},
-                "levels": {"type": "array", "items": {"type": "string", "enum": ["info", "editor", "warning", "error"]}},
-            }, "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_send_mouse_event",
-        "description": "Inject raw viewport mouse button, relative motion, or wheel events into the debug game and wait one frame.",
-        "inputSchema": {
-            "type": "object", "required": ["kind"], "properties": {
-                "kind": {"type": "string", "enum": ["button", "motion", "wheel"]},
-                "button": {"type": "integer", "enum": [1, 2, 3, 8, 9], "default": 1},
-                "pressed": {"type": "boolean", "default": True},
-                "double_click": {"type": "boolean", "default": False},
-                "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
-                "factor": {"type": "number", "minimum": 0.01, "maximum": 100, "default": 1},
-                **{key: {"type": "number"} for key in ["x", "y", "delta_x", "delta_y"]},
-                **{key: {"type": "boolean", "default": False} for key in ["shift", "ctrl", "alt", "meta"]},
-            }, "additionalProperties": False,
-        },
-    },
-    {
-        "name": "godot_wait_runtime_frames",
-        "description": "Wait for debug-game process-frame notifications, for input and rendering synchronization.",
-        "inputSchema": {
-            "type": "object", "properties": {"frames": {"type": "integer", "minimum": 1, "maximum": 120, "default": 1}},
-            "additionalProperties": False,
-        },
-    },
-])
+TOOLS = []
+TOOLS.extend(copy.deepcopy(LOCAL_TOOLS))
+TOOLS.extend(copy.deepcopy(EDITOR_TOOLS))
+configure_catalog(TOOLS)
+REGISTRY = ToolRegistry()
+_local_names = {entry["name"] for entry in LOCAL_TOOLS}
+REGISTRY.register_provider("session", [entry for entry in TOOLS if entry["name"] in _local_names], lambda name, args, bridge: _invoke_local(name, args, bridge))
+REGISTRY.register_provider("editor", [entry for entry in TOOLS if entry["name"] not in _local_names], lambda name, args, bridge: bridge.invoke(name, args))
+TOOLS = REGISTRY.tools
 
 
 class GodotBridge:
     def __init__(self, host: str, port: int | None, connect_timeout: float, request_timeout: float,
-                 project: Path | None = None):
+                 project: Path | None = None, toolset: str = "core"):
+        self._lock = threading.RLock()
+        self.context = {}
+        self._services_lock = threading.RLock()
+        self._connection = None
+        self._shutting_down = False
         self.host = host
         self.port = port
         self.connect_timeout = connect_timeout
@@ -266,16 +56,43 @@ class GodotBridge:
         self.next_id = 1
         self.project = project.resolve() if project else None
         self.token = ""
+        self.toolset = toolset
+        self.package = source_identity()
+
+    def _disconnected(self, connection):
+        # A stale reader must not close a newer editor connection.
+        with self._lock:
+            if self._connection is connection:
+                self._connection = None
+                self.sock = None
+                self.stream = None
+
+    def _context_received(self, context):
+        self.context = context
 
     def close(self) -> None:
-        if self.stream is not None:
-            self.stream.close()
-            self.stream = None
-        if self.sock is not None:
-            self.sock.close()
-            self.sock = None
+        with self._lock:
+            connection = self._connection
+            if connection is None:
+                if self.stream is not None:
+                    self.stream.close()
+                    self.stream = None
+                if self.sock is not None:
+                    self.sock.close()
+                    self.sock = None
+        if connection is not None:
+            connection.close()
+
+    def shutdown(self):
+        with self._lock:
+            self._shutting_down = True
+        if "_services" in self.__dict__:
+            self._services.begin_shutdown()
+        self.close()
 
     def _connect(self) -> None:
+        if self._shutting_down:
+            raise ConnectionError("MCP transport is shutting down; request was not submitted")
         if self.sock is not None:
             return
         if self.project:
@@ -299,24 +116,34 @@ class GodotBridge:
             self.sock = sock
             self.stream = sock.makefile("rwb")
             if self.project:
-                state = self._exchange("godot_get_state", {})
+                state = self._exchange_sync("_editor_state", {})
                 if not state.get("ok") or Path(state["result"]["project_path"]).resolve() != self.project:
                     raise ConnectionError("Connected editor does not match --project.")
+                package = state["result"].get("package", {})
+                if state["result"].get("mcp_version") != VERSION or package.get("protocol") != PROTOCOL or not package.get("verified") or package.get("source_sha256") != self.package["source_sha256"]:
+                    raise ConnectionError("MCP package/protocol mismatch. Regenerate package.json, synchronize the plugin and restart the editor; mutations were not submitted.")
+            sock.settimeout(None)
+            self._connection = RPCConnection(sock, self.stream, self._disconnected, self._context_received)
         except Exception:
             self.close()
             raise
 
     def invoke(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        self._connect()
-        return self._exchange(tool, arguments)
+        with self._lock:
+            self._connect()
+            connection = self._connection
+            request_id = self.next_id
+            self.next_id += 1
+        payload = {"id": request_id, "method": "invoke", "token": self.token, "params": {"tool": tool, "arguments": arguments}}
+        return connection.request(payload, self.request_timeout)
 
-    def _exchange(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _exchange_sync(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         request_id = self.next_id
         self.next_id += 1
         payload = {"id": request_id, "method": "invoke", "token": self.token, "params": {"tool": tool, "arguments": arguments}}
         try:
             assert self.stream is not None
-            self.stream.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
+            self.stream.write((json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
             self.stream.flush()
             line = self.stream.readline(8 * 1024 * 1024 + 1)
             if not line:
@@ -326,6 +153,7 @@ class GodotBridge:
             response = json.loads(line)
             if response.get("id") != request_id:
                 raise RuntimeError(f"Unexpected bridge response id: {response.get('id')}")
+            self.context = response.get("context", self.context)
             return response
         except (OSError, ValueError, RuntimeError, ConnectionError):
             self.close()
@@ -347,12 +175,18 @@ def tool_result(response: dict[str, Any]) -> dict[str, Any]:
     if not response.get("ok"):
         error = response.get("error", {})
         text = json.dumps(error, ensure_ascii=False)
-        return {"content": [{"type": "text", "text": text}], "isError": True}
+        return {"content": [{"type": "text", "text": text}], "isError": True, "_meta": {"godot": response.get("context", {})}}
 
     result = response.get("result")
+    native_image = None
+    if isinstance(result, dict) and "_mcp_image_base64" in result:
+        result = result.copy()
+        native_image = result.pop("_mcp_image_base64")
     content: list[dict[str, Any]] = [
         {"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}
     ]
+    if native_image is not None:
+        content.append({"type": "image", "data": native_image, "mimeType": "image/png"})
     if isinstance(result, dict) and isinstance(result.get("path"), str):
         path = Path(result["path"])
         if path.is_file() and path.suffix.lower() == ".png":
@@ -361,41 +195,36 @@ def tool_result(response: dict[str, Any]) -> dict[str, Any]:
                 path.unlink()
             except OSError:
                 pass
-    return {"content": content, "structuredContent": result, "isError": False}
+    return {"content": content, "structuredContent": result, "isError": False, "_meta": {"godot": response.get("context", {})}}
 
 
-def validate_arguments(value: Any, schema: dict[str, Any], path: str = "arguments") -> None:
-    expected = schema.get("type")
-    matches = {
-        "object": isinstance(value, dict), "array": isinstance(value, list),
-        "string": isinstance(value, str), "boolean": isinstance(value, bool),
-        "integer": isinstance(value, int) and not isinstance(value, bool),
-        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
-    }
-    if expected and not matches[expected]:
-        raise ValueError(f"{path} must be {expected}")
-    if "enum" in schema and value not in schema["enum"]:
-        raise ValueError(f"{path} is not an allowed value")
-    if expected == "object":
-        for key in schema.get("required", []):
-            if key not in value:
-                raise ValueError(f"{path}.{key} is required")
-        properties = schema.get("properties", {})
-        for key, item in value.items():
-            if key in properties:
-                validate_arguments(item, properties[key], f"{path}.{key}")
-            elif schema.get("additionalProperties") is False:
-                raise ValueError(f"Unknown {path}.{key}")
-    elif expected == "array":
-        for index, item in enumerate(value):
-            validate_arguments(item, schema.get("items", {}), f"{path}[{index}]")
-    elif expected in {"integer", "number"}:
-        if not __import__("math").isfinite(value):
-            raise ValueError(f"{path} must be finite")
-        if value < schema.get("minimum", value) or value > schema.get("maximum", value):
-            raise ValueError(f"{path} is outside the allowed range")
-    elif expected == "string" and len(value) < schema.get("minLength", 0):
-        raise ValueError(f"{path} is too short")
+def checked_result(name, response):
+    if response.get("ok"):
+        try:
+            validate_json_budget(response.get("result"), 8 * 1024 * 1024)
+            validate_arguments(response.get("result"), next(item["outputSchema"] for item in TOOLS if item["name"] == name), "result")
+        except ValueError as error:
+            return tool_result({"ok": False, "error": {"code": "RESULT_CONTRACT_VIOLATION", "message": str(error), "tool": name, "stage": "result", "outcome": "Inspect current state; do not replay mutations automatically"}})
+    return tool_result(response)
+
+
+def _invoke_local(tool, arguments, bridge):
+    with bridge._services_lock:
+        if "_services" not in bridge.__dict__:
+            bridge._services = Services(bridge.project, getattr(bridge, "godot", None), bridge.toolset)
+    def editor(name, values):
+        response = bridge.invoke(name, values)
+        if not response.get("ok"):
+            raise RuntimeError(response.get("error"))
+        return response.get("result")
+    def dispatch(name, values):
+        result = handle_message({"id": 0, "method": "tools/call", "params": {"name": name, "arguments": values}}, bridge)
+        payload = result.get("result", {})
+        if payload.get("isError") or "error" in result:
+            raise ValueError(payload.get("content", result.get("error")))
+        return payload.get("structuredContent")
+    value = bridge._services.invoke(tool, arguments, TOOLS, dispatch, editor)
+    return {"ok": True, "result": value, "context": {"scope": "sidecar", "protocol": 2, "service_id": bridge._services.service_id, "project_id": hashlib.sha256(str(bridge.project).encode()).hexdigest() if bridge.project else None}}
 
 
 def handle_message(message: dict[str, Any], bridge: GodotBridge) -> dict[str, Any] | None:
@@ -406,41 +235,47 @@ def handle_message(message: dict[str, Any], bridge: GodotBridge) -> dict[str, An
     if method.startswith("notifications/"):
         return None
     if method == "initialize":
+        REGISTRY.freeze()
         requested = params.get("protocolVersion", "2025-06-18")
         protocol = requested if requested in SUPPORTED_PROTOCOLS else "2025-06-18"
         return rpc_result(request_id, {"protocolVersion": protocol, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": SERVER_INFO})
     if method == "ping":
         return rpc_result(request_id, {})
     if method == "tools/list":
-        return rpc_result(request_id, {"tools": TOOLS})
+        return rpc_result(request_id, {"tools": select_tools(TOOLS, "all" if getattr(bridge, "toolset", "core") == "all" else "core")})
     if method == "tools/call":
         tool = str(params.get("name", ""))
         arguments = params.get("arguments", {})
         if tool not in {item["name"] for item in TOOLS}:
             return rpc_error(request_id, -32602, f"Unknown tool: {tool}")
         try:
+            validate_json_budget(arguments)
             validate_arguments(arguments, next(item["inputSchema"] for item in TOOLS if item["name"] == tool))
-            return rpc_result(request_id, tool_result(bridge.invoke(tool, arguments)))
+            return rpc_result(request_id, checked_result(tool, REGISTRY.invoke(tool, arguments, bridge)))
         except Exception as error:
-            return rpc_result(request_id, {"content": [{"type": "text", "text": str(error)}], "isError": True})
+            return rpc_result(request_id, tool_result({"ok": False, "error": {"code": "INVALID_ARGUMENT" if isinstance(error, ValueError) else "TRANSPORT_ERROR" if isinstance(error, OSError) else "TOOL_ERROR", "message": str(error), "tool": tool, "stage": "sidecar"}}))
     return rpc_error(request_id, -32601, f"Method not found: {method}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Godot MCP stdio server")
+    parser.add_argument("--godot", type=Path, help="Custom editor executable for isolated development tasks.")
+    parser.add_argument("--auto-start", action="store_true", help="Start or reuse the editor as a background job; stdio initialization remains available.")
+    parser.add_argument("--startup-timeout-ms", type=int, default=60000)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int)
     parser.add_argument("--project", type=Path, help="Godot project directory; discovers endpoint and verifies editor identity.")
     parser.add_argument("--list-tools", action="store_true", help="Print the MCP tool catalog and exit.")
+    parser.add_argument("--toolset", choices=["core", "all"], default="core", help="Default core catalog or every stateful tool; extended tools remain available through discover/call.")
     parser.add_argument("--call", choices=[tool["name"] for tool in TOOLS], help="Invoke a tool once and print the same MCP result as tools/call.")
     parser.add_argument("--arguments", default="{}", help="JSON object for --call.")
-    parser.add_argument("--output-image", type=Path, help="Save the image returned by --call godot_capture.")
+    parser.add_argument("--output-image", type=Path, help="Save the image returned by --call godot_capture_frame.")
     parser.add_argument("--connect-timeout", type=float, default=5.0)
     parser.add_argument("--request-timeout", type=float, default=15.0)
     args = parser.parse_args()
 
     if args.list_tools:
-        print(json.dumps({"tools": TOOLS}, ensure_ascii=False, indent=2))
+        print(json.dumps({"tools": select_tools(TOOLS, args.toolset)}, ensure_ascii=False, indent=2))
         return 0
     project = args.project
     if project is None:
@@ -449,8 +284,16 @@ def main() -> int:
             if (parent / "project.godot").is_file():
                 project = parent
                 break
-    bridge = GodotBridge(args.host, args.port, args.connect_timeout, args.request_timeout, project)
+    bridge = GodotBridge(args.host, args.port, args.connect_timeout, args.request_timeout, project, args.toolset)
+    bridge.godot = args.godot
+    def terminate(signum, _frame):
+        bridge.shutdown()
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, terminate)
     try:
+        if args.auto_start:
+            startup = _invoke_local("godot_editor_start", {"reuse": True, "display_mode": "visible", "timeout_ms": args.startup_timeout_ms}, bridge)
+            bridge._services.startup_job = startup["result"]["job_id"]
         if args.call:
             arguments = json.loads(args.arguments)
             if not isinstance(arguments, dict):
@@ -464,21 +307,11 @@ def main() -> int:
                         del item["data"]
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 1 if result.get("isError") else 0
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                message = json.loads(line)
-                response = handle_message(message, bridge)
-            except json.JSONDecodeError as error:
-                response = rpc_error(None, -32700, "Parse error", str(error))
-            except Exception as error:
-                response = rpc_error(message.get("id") if isinstance(message, dict) else None, -32603, "Internal error", str(error))
-            if response is not None:
-                sys.stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
-                sys.stdout.flush()
+        serve_stdio(sys.stdin, sys.stdout, lambda message: handle_message(message, bridge), rpc_error, bridge.shutdown)
     finally:
+        bridge.shutdown()
+        if "_services" in bridge.__dict__:
+            bridge._services.close()
         bridge.close()
     return 0
 

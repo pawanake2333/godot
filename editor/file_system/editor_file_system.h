@@ -185,6 +185,7 @@ class EditorFileSystem : public Node {
 	SafeFlag filesystem_changed_queued;
 	bool scanning = false;
 	bool importing = false;
+	uint64_t reimport_progress_sequence = 0;
 	bool first_scan = true;
 	bool scan_changes_pending = false;
 	float scan_total;

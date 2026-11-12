@@ -50,6 +50,7 @@ void ScriptEditorBase::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("search_in_files_requested", PropertyInfo(Variant::STRING, "text")));
 	ClassDB::bind_method(D_METHOD("add_syntax_highlighter", "highlighter"), &ScriptEditorBase::add_syntax_highlighter);
 	ClassDB::bind_method(D_METHOD("get_base_editor"), &ScriptEditorBase::get_base_editor);
+	ClassDB::bind_method(D_METHOD("get_edited_resource"), &ScriptEditorBase::get_edited_resource);
 
 	// First use in ScriptTextEditor.
 	ADD_SIGNAL(MethodInfo("request_save_history"));

@@ -80,6 +80,14 @@ void ScriptEditorDebugger::_put_msg(const String &p_message, const Array &p_data
 	ERR_FAIL_COND(p_thread_id == Thread::UNASSIGNED_ID);
 	if (is_session_active()) {
 		Array msg = { p_message, p_thread_id, p_data };
+		if (p_message.begins_with("profiler:") && !p_data.is_empty()) {
+			String kind = p_message.trim_prefix("profiler:");
+			Dictionary previous = get_profiler_state(kind);
+			Dictionary state;
+			state["enabled"] = p_data[0];
+			state["generation"] = int64_t(previous["generation"]) + 1;
+			profiler_states[kind] = state;
+		}
 		Error err = peer->put_message(msg);
 		ERR_FAIL_COND_MSG(err != OK, vformat("Failed to send message %d", err));
 	}
@@ -587,7 +595,12 @@ void ScriptEditorDebugger::_msg_output(uint64_t p_thread_id, const Array &p_data
 				msg_type = EditorLog::MSG_TYPE_STD;
 			} break;
 		}
-		EditorNode::get_log()->add_message(output_strings[i], msg_type);
+		Dictionary metadata;
+		metadata["source"] = "runtime";
+		metadata["runtime_pid"] = remote_pid;
+		metadata["debugger_id"] = get_instance_id();
+		metadata["thread_id"] = p_thread_id;
+		EditorNode::get_log()->add_debugger_message(output_strings[i], msg_type, metadata);
 		emit_signal(SceneStringName(output), output_strings[i], msg_type);
 	}
 }
@@ -608,6 +621,7 @@ void ScriptEditorDebugger::_msg_visual_hardware_info(uint64_t p_thread_id, const
 }
 
 void ScriptEditorDebugger::_msg_visual_profile_frame(uint64_t p_thread_id, const Array &p_data) {
+	emit_signal(SNAME("profiler_frame"), "visual", p_data);
 	ServersDebugger::VisualProfilerFrame frame;
 	frame.deserialize(p_data);
 
@@ -632,6 +646,9 @@ void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data)
 	ERR_FAIL_COND_MSG(oe.deserialize(p_data) == false, "Failed to deserialize error message");
 	Dictionary metadata;
 	metadata["source"] = "runtime";
+	metadata["runtime_pid"] = remote_pid;
+	metadata["debugger_id"] = get_instance_id();
+	metadata["thread_id"] = p_thread_id;
 	metadata["file"] = oe.source_file;
 	metadata["line"] = oe.source_line;
 	metadata["function"] = oe.source_func;
@@ -793,6 +810,7 @@ void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data)
 }
 
 void ScriptEditorDebugger::_msg_servers_function_signature(uint64_t p_thread_id, const Array &p_data) {
+	emit_signal(SNAME("profiler_frame"), "servers_signature", p_data);
 	// Cache a profiler signature.
 	ServersDebugger::ScriptFunctionSignature sig;
 	sig.deserialize(p_data);
@@ -912,6 +930,7 @@ void ScriptEditorDebugger::_msg_servers_profile_common(const Array &p_data, cons
 }
 
 void ScriptEditorDebugger::_msg_servers_profile_frame(uint64_t p_thread_id, const Array &p_data) {
+	emit_signal(SNAME("profiler_frame"), "servers", p_data);
 	_msg_servers_profile_common(p_data, false);
 }
 void ScriptEditorDebugger::_msg_servers_profile_total(uint64_t p_thread_id, const Array &p_data) {
@@ -1349,6 +1368,7 @@ void ScriptEditorDebugger::_stop_and_notify() {
 }
 
 void ScriptEditorDebugger::stop() {
+	profiler_states.clear();
 	set_process(false);
 	threads_debugged.clear();
 	debugging_thread_id = Thread::UNASSIGNED_ID;
@@ -1486,7 +1506,11 @@ void ScriptEditorDebugger::_method_changed(Object *p_base, const StringName &p_n
 	}
 
 	if (node) {
-		NodePath path = EditorNode::get_singleton()->get_edited_scene()->get_path_to(node);
+		Node *edited_root = EditorNode::get_singleton()->get_edited_scene();
+		if (node != edited_root && !edited_root->is_ancestor_of(node)) {
+			return;
+		}
+		NodePath path = edited_root->get_path_to(node);
 		int pathid = _get_node_path_cache(path);
 
 		Array msg = { pathid, p_name };
@@ -1517,14 +1541,18 @@ void ScriptEditorDebugger::_method_changed(Object *p_base, const StringName &p_n
 }
 
 void ScriptEditorDebugger::_property_changed(Object *p_base, const StringName &p_property, const Variant &p_value) {
-	if (!p_base || !live_debug || !EditorNode::get_singleton()->get_edited_scene()) {
+	if (!p_base || !live_debug || !is_session_active() || !EditorNode::get_singleton()->get_edited_scene()) {
 		return;
 	}
 
 	Node *node = Object::cast_to<Node>(p_base);
 
 	if (node) {
-		NodePath path = EditorNode::get_singleton()->get_edited_scene()->get_path_to(node);
+		Node *edited_root = EditorNode::get_singleton()->get_edited_scene();
+		if (node != edited_root && !edited_root->is_ancestor_of(node)) {
+			return;
+		}
+		NodePath path = edited_root->get_path_to(node);
 		int pathid = _get_node_path_cache(path);
 
 		if (p_value.is_ref_counted()) {
@@ -1779,9 +1807,9 @@ void ScriptEditorDebugger::set_breakpoint(const String &p_path, int p_line, bool
 	}
 
 	if (!p_enabled) {
-		path_item->remove_child(breakpoint_item);
+		memdelete(breakpoint_item);
 		if (path_item->get_first_child() == nullptr) {
-			breakpoints_tree->get_root()->remove_child(path_item);
+			memdelete(path_item);
 		}
 	}
 }
@@ -2058,6 +2086,7 @@ void ScriptEditorDebugger::_tab_changed(int p_tab) {
 }
 
 void ScriptEditorDebugger::_bind_methods() {
+	ADD_SIGNAL(MethodInfo("profiler_frame", PropertyInfo(Variant::STRING, "kind"), PropertyInfo(Variant::ARRAY, "data")));
 	ClassDB::bind_method(D_METHOD("live_debug_create_node"), &ScriptEditorDebugger::live_debug_create_node);
 	ClassDB::bind_method(D_METHOD("live_debug_instantiate_node"), &ScriptEditorDebugger::live_debug_instantiate_node);
 	ClassDB::bind_method(D_METHOD("live_debug_remove_node"), &ScriptEditorDebugger::live_debug_remove_node);
@@ -2114,6 +2143,16 @@ void ScriptEditorDebugger::switch_to_debugger(int p_debugger_tab_idx) {
 
 void ScriptEditorDebugger::send_message(const String &p_message, const Array &p_args) {
 	_put_msg(p_message, p_args);
+}
+
+Dictionary ScriptEditorDebugger::get_profiler_state(const String &p_profiler) const {
+	if (profiler_states.has(p_profiler)) {
+		return profiler_states[p_profiler];
+	}
+	Dictionary state;
+	state["enabled"] = false;
+	state["generation"] = int64_t(0);
+	return state;
 }
 
 void ScriptEditorDebugger::toggle_profiler(const String &p_profiler, bool p_enable, const Array &p_data) {

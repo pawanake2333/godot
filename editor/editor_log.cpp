@@ -251,6 +251,7 @@ void EditorLog::_meta_clicked(const String &p_meta) {
 }
 
 void EditorLog::_clear_request() {
+	output_revision++;
 	log->clear();
 	messages.clear();
 	_reset_message_counts();
@@ -273,8 +274,9 @@ void EditorLog::record_automation_message(const String &p_msg, MessageType p_typ
 	automation_messages.write[(automation_sequence - 1) % AUTOMATION_LOG_CAPACITY] = entry;
 }
 
-void EditorLog::_process_message(const String &p_msg, MessageType p_type, bool p_clear) {
-	record_automation_message(p_msg, p_type);
+void EditorLog::_process_message(const String &p_msg, MessageType p_type, bool p_clear, const Dictionary &p_metadata) {
+	output_revision++;
+	record_automation_message(p_msg, p_type, p_metadata);
 	if (messages.size() > 0 && messages[messages.size() - 1].text == p_msg && messages[messages.size() - 1].type == p_type) {
 		// If previous message is the same as the new one, increase previous count rather than adding another
 		// instance to the messages list.
@@ -293,6 +295,10 @@ void EditorLog::_process_message(const String &p_msg, MessageType p_type, bool p
 }
 
 void EditorLog::add_message(const String &p_msg, MessageType p_type) {
+	add_debugger_message(p_msg, p_type, Dictionary());
+}
+
+void EditorLog::add_debugger_message(const String &p_msg, MessageType p_type, const Dictionary &p_metadata) {
 	// Make text split by new lines their own message.
 	// See #41321 for reasoning. At time of writing, multiple print()'s in running projects
 	// get grouped together and sent to the editor log as one message. This can mess with the
@@ -302,14 +308,14 @@ void EditorLog::add_message(const String &p_msg, MessageType p_type) {
 	int line_count = lines.size();
 
 	for (int i = 0; i < line_count; i++) {
-		_process_message(lines[i], p_type, i == line_count - 1);
+		_process_message(lines[i], p_type, i == line_count - 1, p_metadata);
 	}
 }
 
 Dictionary EditorLog::get_message_snapshot(int64_t p_cursor, int p_max_entries) const {
 	ERR_FAIL_COND_V(p_cursor < 0 || p_cursor > automation_sequence, Dictionary());
 	ERR_FAIL_COND_V(p_max_entries < 1 || p_max_entries > AUTOMATION_LOG_CAPACITY, Dictionary());
-	const int64_t oldest = MAX(int64_t(1), automation_sequence - AUTOMATION_LOG_CAPACITY + 1);
+	const int64_t oldest = MAX(automation_history_start, automation_sequence - AUTOMATION_LOG_CAPACITY + 1);
 	const int64_t first = MAX(p_cursor + 1, oldest);
 	const int64_t end = MIN(automation_sequence + 1, first + p_max_entries);
 	Array entries;
@@ -323,6 +329,165 @@ Dictionary EditorLog::get_message_snapshot(int64_t p_cursor, int p_max_entries) 
 	result["oldest_cursor"] = oldest;
 	result["dropped"] = p_cursor + 1 < oldest;
 	result["has_more"] = end <= automation_sequence;
+	result["history_generation"] = automation_history_generation;
+	result["cleared_through_cursor"] = automation_history_start - 1;
+	return result;
+}
+
+Dictionary EditorLog::get_output_state() const {
+	Dictionary counts;
+	PackedStringArray levels;
+	const char *names[] = { "info", "error", "warning", "editor" };
+	const MessageType types[] = { MSG_TYPE_STD, MSG_TYPE_ERROR, MSG_TYPE_WARNING, MSG_TYPE_EDITOR };
+	int64_t total = 0;
+	for (int i = 0; i < 4; i++) {
+		LogFilter *filter = type_filter_map[types[i]];
+		counts[names[i]] = filter->get_message_count();
+		total += filter->get_message_count();
+		if (filter->is_active()) {
+			levels.push_back(names[i]);
+		}
+	}
+	const int64_t oldest = MAX(automation_history_start, automation_sequence - AUTOMATION_LOG_CAPACITY + 1);
+	Dictionary diagnostics;
+	diagnostics["latest_cursor"] = automation_sequence;
+	diagnostics["oldest_cursor"] = oldest;
+	diagnostics["retained_count"] = automation_sequence - oldest + 1;
+	diagnostics["history_generation"] = automation_history_generation;
+	diagnostics["cleared_through_cursor"] = automation_history_start - 1;
+	Dictionary result;
+	result["visible"] = is_visible_in_tree();
+	result["levels"] = levels;
+	result["search"] = search_box->get_text();
+	result["collapse"] = collapse;
+	result["counts"] = counts;
+	result["message_count"] = total;
+	result["stored_rows"] = messages.size();
+	result["line_limit"] = line_limit;
+	result["text_characters"] = log->get_total_character_count();
+	result["revision"] = output_revision;
+	result["diagnostics"] = diagnostics;
+	return result;
+}
+
+Error EditorLog::configure_output(const Dictionary &p_options) {
+	// Validate the entire request before changing any widget or saved setting.
+	for (const Variant &key : p_options.get_key_list()) {
+		const Variant &value = p_options[key];
+		if (key == "visible" || key == "collapse") {
+			if (value.get_type() != Variant::BOOL) {
+				return ERR_INVALID_PARAMETER;
+			}
+		} else if (key == "search") {
+			if (value.get_type() != Variant::STRING || String(value).length() > 1024) {
+				return ERR_INVALID_PARAMETER;
+			}
+		} else if (key == "levels") {
+			if (value.get_type() != Variant::ARRAY) {
+				return ERR_INVALID_PARAMETER;
+			}
+			Array levels = value;
+			if (levels.size() > 4) {
+				return ERR_INVALID_PARAMETER;
+			}
+			for (const Variant &level : levels) {
+				if (level.get_type() != Variant::STRING || (level != "info" && level != "error" && level != "warning" && level != "editor")) {
+					return ERR_INVALID_PARAMETER;
+				}
+			}
+		} else {
+			return ERR_INVALID_PARAMETER;
+		}
+	}
+
+	if (p_options.has("levels")) {
+		const Array levels = p_options["levels"];
+		type_filter_map[MSG_TYPE_STD]->set_active(levels.has("info"));
+		type_filter_map[MSG_TYPE_ERROR]->set_active(levels.has("error"));
+		type_filter_map[MSG_TYPE_WARNING]->set_active(levels.has("warning"));
+		type_filter_map[MSG_TYPE_EDITOR]->set_active(levels.has("editor"));
+	}
+	if (p_options.has("collapse")) {
+		collapse_button->set_pressed(p_options["collapse"]);
+	}
+	if (p_options.has("search") && search_box->get_text() != String(p_options["search"])) {
+		search_box->set_text(p_options["search"]);
+		// LineEdit::set_text does not emit text_changed; dispatch its UI handler.
+		search_box->emit_signal(SceneStringName(text_changed), search_box->get_text());
+	}
+
+	if (p_options.has("visible")) {
+		if (bool(p_options["visible"])) {
+			make_visible();
+		} else {
+			close();
+		}
+	}
+	return OK;
+}
+
+Dictionary EditorLog::clear_output(const String &p_scope, int64_t p_through_cursor) {
+	const bool panel = p_scope == "panel" || p_scope == "all";
+	const bool diagnostics = p_scope == "diagnostics" || p_scope == "all";
+	Dictionary error;
+	if (!panel && !diagnostics) {
+		error["error"] = "INVALID_ARGUMENT";
+		error["message"] = "Unknown Output clear scope.";
+		return error;
+	}
+	const int64_t cutoff = p_through_cursor < 0 ? automation_sequence : p_through_cursor;
+	if (diagnostics && cutoff > automation_sequence) {
+		error["error"] = "INVALID_CURSOR";
+		error["message"] = "Clear cursor is beyond the latest diagnostic.";
+		return error;
+	}
+	if (panel) {
+		clear();
+	}
+	int removed = 0;
+	if (diagnostics) {
+		const int64_t oldest = MAX(automation_history_start, automation_sequence - AUTOMATION_LOG_CAPACITY + 1);
+		for (int64_t sequence = oldest; sequence <= cutoff; sequence++) {
+			automation_messages.write[(sequence - 1) % AUTOMATION_LOG_CAPACITY] = Dictionary();
+			removed++;
+		}
+		automation_history_start = MAX(automation_history_start, cutoff + 1);
+		automation_history_generation++;
+		if (automation_history_start > automation_sequence) {
+			automation_messages.clear();
+		}
+	}
+	Dictionary result = get_output_state();
+	result["cleared_panel"] = panel;
+	result["cleared_diagnostics"] = diagnostics;
+	result["removed_diagnostics"] = removed;
+	return result;
+}
+
+Dictionary EditorLog::read_output(int p_offset, int p_max_chars) const {
+	Dictionary result;
+	if (p_offset < 0 || p_max_chars < 1 || p_max_chars > 65536) {
+		result["error"] = "INVALID_ARGUMENT";
+		result["message"] = "Invalid Output text range.";
+		return result;
+	}
+	if (log->get_total_character_count() > 1048576) {
+		result["error"] = "RESULT_TOO_LARGE";
+		result["message"] = "Filter the Output panel before reading more than one million characters.";
+		return result;
+	}
+	const String text = log->get_parsed_text();
+	if (p_offset > text.length()) {
+		result["error"] = "INVALID_ARGUMENT";
+		result["message"] = "Output text offset is beyond the displayed buffer.";
+		return result;
+	}
+	const int next = MIN(text.length(), p_offset + p_max_chars);
+	result["text"] = text.substr(p_offset, p_max_chars);
+	result["next_offset"] = next;
+	result["total_characters"] = text.length();
+	result["has_more"] = next < text.length();
+	result["revision"] = output_revision;
 	return result;
 }
 
@@ -341,6 +506,7 @@ void EditorLog::_undo_redo_cbk(void *p_self, const String &p_name) {
 }
 
 void EditorLog::_rebuild_log() {
+	output_revision++;
 	if (messages.is_empty()) {
 		return;
 	}
@@ -564,6 +730,7 @@ EditorLog::EditorLog() {
 
 	// Clear.
 	clear_button = memnew(Button);
+	clear_button->set_name("ClearOutput");
 	clear_button->set_accessibility_name(TTRC("Clear Log"));
 	clear_button->set_theme_type_variation("BottomPanelButton");
 	clear_button->set_focus_mode(FOCUS_ACCESSIBILITY);
@@ -573,6 +740,7 @@ EditorLog::EditorLog() {
 
 	// Collapse.
 	collapse_button = memnew(Button);
+	collapse_button->set_name("CollapseOutputMessages");
 	collapse_button->set_theme_type_variation("BottomPanelButton");
 	collapse_button->set_focus_mode(FOCUS_ACCESSIBILITY);
 	collapse_button->set_tooltip_text(TTR("Collapse duplicate messages into one log entry. Shows number of occurrences."));
@@ -583,6 +751,7 @@ EditorLog::EditorLog() {
 
 	// Search box
 	search_box = memnew(LineEdit);
+	search_box->set_name("FilterOutputMessages");
 	search_box->set_custom_minimum_size(Vector2(150 * EDSCALE, 0));
 	search_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	search_box->set_placeholder(TTRC("Filter Messages"));
@@ -597,22 +766,26 @@ EditorLog::EditorLog() {
 	// Message Type Filters.
 	LogFilter *std_filter = memnew(LogFilter(MSG_TYPE_STD));
 	std_filter->initialize_button(TTRC("Standard Messages"), TTRC("Toggle visibility of standard output messages."), callable_mp(this, &EditorLog::_set_filter_active));
+	std_filter->toggle_button->set_name("ToggleOutputStd");
 	hbox->add_child(std_filter->toggle_button);
 	type_filter_map.insert(MSG_TYPE_STD, std_filter);
 	type_filter_map.insert(MSG_TYPE_STD_RICH, std_filter);
 
 	LogFilter *error_filter = memnew(LogFilter(MSG_TYPE_ERROR));
 	error_filter->initialize_button(TTRC("Errors"), TTRC("Toggle visibility of errors."), callable_mp(this, &EditorLog::_set_filter_active));
+	error_filter->toggle_button->set_name("ToggleOutputError");
 	hbox->add_child(error_filter->toggle_button);
 	type_filter_map.insert(MSG_TYPE_ERROR, error_filter);
 
 	LogFilter *warning_filter = memnew(LogFilter(MSG_TYPE_WARNING));
 	warning_filter->initialize_button(TTRC("Warnings"), TTRC("Toggle visibility of warnings."), callable_mp(this, &EditorLog::_set_filter_active));
+	warning_filter->toggle_button->set_name("ToggleOutputWarning");
 	hbox->add_child(warning_filter->toggle_button);
 	type_filter_map.insert(MSG_TYPE_WARNING, warning_filter);
 
 	LogFilter *editor_filter = memnew(LogFilter(MSG_TYPE_EDITOR));
 	editor_filter->initialize_button(TTRC("Editor Messages"), TTRC("Toggle visibility of editor messages."), callable_mp(this, &EditorLog::_set_filter_active));
+	editor_filter->toggle_button->set_name("ToggleOutputEditor");
 	hbox->add_child(editor_filter->toggle_button);
 	type_filter_map.insert(MSG_TYPE_EDITOR, editor_filter);
 

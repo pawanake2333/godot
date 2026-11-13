@@ -55,6 +55,8 @@ python3 addons/godot_mcp/scripts/deploy.py --target "$PROJECT/addons/godot_mcp"
 "$GODOT" --editor --path "$PROJECT"
 ```
 
+部署固定排除 `tests/`（包含测试脚本、fixtures 及其生成缓存）；测试只保留在 Godot 源仓库。旧副本中的测试文件会先与已有部署清单比对，确认未修改后移除；未知文件、本地修改或符号链接会阻止迁移。
+
 同步器基于 deployment.json 对目标进行冲突检查，再原子替换文件并验证哈希；本地修改、删除或未知文件会拒绝覆盖。无清单的旧副本须审阅后用 --baseline 首次接管。UID 和缓存不作为手改源码覆盖。生产插件更新后重新启动编辑器，避免载入不同包。
 
 MCP 客户端配置示例中的占位符需由客户端展开：

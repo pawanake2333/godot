@@ -14,10 +14,12 @@ from package_info import source_identity, file_hash
 EXCLUDED = {"__pycache__", ".godot", ".DS_Store"}
 
 
-def deploy_files(root):
+def deploy_files(root, *, include_tests=False):
     return {path.relative_to(root).as_posix(): file_hash(path) for path in sorted(root.rglob("*"))
             if path.is_file() and not path.is_symlink() and not (set(path.relative_to(root).parts) & EXCLUDED)
-            and path.suffix not in {".pyc", ".uid"} and path.name != "deployment.json"}
+            and path.suffix not in {".pyc", ".uid"} and path.name != "deployment.json"
+            and (include_tests or path.relative_to(root).parts[0] != "tests")
+            and not (path.relative_to(root).parts[0] == "tests" and path.suffix == ".import")}
 
 
 def synchronize(source, target, *, baseline=None, check=False):
@@ -26,12 +28,17 @@ def synchronize(source, target, *, baseline=None, check=False):
     if source == target or source in target.parents or target in source.parents:
         raise ValueError("Source and target must be separate plugin directories")
     desired = deploy_files(source)
-    present = deploy_files(target) if target.exists() else {}
+    # Inventory legacy tests as well, so excluded files are removed only when
+    # they still match the last deployment. Unknown/edited files remain protected.
+    present = deploy_files(target, include_tests=True) if target.exists() else {}
+    tests_path = target / "tests"
+    if tests_path.is_symlink() or (tests_path.is_dir() and any(path.is_symlink() for path in tests_path.rglob("*"))):
+        raise ValueError("Deployment conflicts (nothing changed): symlink in target tests")
     manifest_path = target / "deployment.json"
     if manifest_path.exists():
         previous = json.loads(manifest_path.read_text())["files"]
     elif baseline is not None:
-        previous = deploy_files(Path(baseline))
+        previous = deploy_files(Path(baseline), include_tests=True)
     elif present:
         raise ValueError("Existing copy has no deployment manifest; supply --baseline after reviewing its source")
     else:
@@ -41,11 +48,15 @@ def synchronize(source, target, *, baseline=None, check=False):
     if conflicts:
         raise ValueError("Deployment conflicts (nothing changed): " + ", ".join(conflicts))
     changed = sorted(name for name in set(desired) | set(present) if desired.get(name) != present.get(name))
+    if tests_path.exists():
+        changed.append("tests/")
     if check:
         return {"matches": not changed, "changed": changed, "source_sha256": source_identity(source)["source_sha256"]}
     target.mkdir(parents=True, exist_ok=True)
     # Preflight above is complete before any mutation; replace each file atomically.
     for name in changed:
+        if name == "tests/":
+            continue
         path = target / name
         if name in desired:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +65,8 @@ def synchronize(source, target, *, baseline=None, check=False):
             temporary.replace(path)
         else:
             path.unlink()
+    if tests_path.is_dir():
+        shutil.rmtree(tests_path)
     manifest = {**source_identity(source), "files": desired}
     temporary = manifest_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

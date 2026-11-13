@@ -317,4 +317,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # MCP stdio is UTF-8 regardless of the Windows system code page.
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     raise SystemExit(main())

@@ -21,8 +21,25 @@ class Watch:
         self.queue = None
         self.selector = None
         self.endpoint_inode = None
+        self.win_handles = []
         try:
-            if hasattr(select, "kqueue"):
+            if sys.platform == "win32":
+                from ctypes import wintypes
+                self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                self.kernel.FindFirstChangeNotificationW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL, wintypes.DWORD]
+                self.kernel.FindFirstChangeNotificationW.restype = wintypes.HANDLE
+                self.kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                self.kernel.OpenProcess.restype = wintypes.HANDLE
+                self.kernel.WaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE), wintypes.BOOL, wintypes.DWORD]
+                self.kernel.WaitForMultipleObjects.restype = wintypes.DWORD
+                self.kernel.FindNextChangeNotification.argtypes = [wintypes.HANDLE]
+                self.kernel.FindCloseChangeNotification.argtypes = [wintypes.HANDLE]
+                self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+                handle = self.kernel.FindFirstChangeNotificationW(str(directory), False, 0x1 | 0x8 | 0x10)
+                if handle == ctypes.c_void_p(-1).value:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                self.win_handles.append(handle)
+            elif hasattr(select, "kqueue"):
                 self.queue = select.kqueue()
                 descriptor = os.open(directory, os.O_RDONLY)
                 self.descriptors.append(descriptor)
@@ -47,7 +64,12 @@ class Watch:
 
     def watch_process(self, pid):
         self.pid = pid
-        if self.queue is not None:
+        if self.win_handles:
+            handle = self.kernel.OpenProcess(0x00100000, False, pid)
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.win_handles.append(handle)
+        elif self.queue is not None:
             self.queue.control([select.kevent(pid, filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD, fflags=select.KQ_NOTE_EXIT)], 0, 0)
         else:
             descriptor = os.pidfd_open(pid)
@@ -70,6 +92,17 @@ class Watch:
             pass
 
     def wait(self, seconds):
+        if self.win_handles:
+            from ctypes import wintypes
+            handles = (wintypes.HANDLE * len(self.win_handles))(*self.win_handles)
+            result = self.kernel.WaitForMultipleObjects(len(handles), handles, False, min(0xfffffffe, max(0, int(seconds * 1000))))
+            if result == 0xffffffff:
+                raise ctypes.WinError(ctypes.get_last_error())
+            if result == 0:
+                if not self.kernel.FindNextChangeNotification(self.win_handles[0]):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                return [{"process_exit": False}]
+            return [{"process_exit": True}] if result == 1 and len(handles) > 1 else []
         if self.queue is not None:
             return [{"process_exit": event.filter == select.KQ_FILTER_PROC} for event in self.queue.control(None, 8, max(0, seconds))]
         events = []
@@ -84,6 +117,11 @@ class Watch:
         return events
 
     def close(self):
+        if self.win_handles:
+            self.kernel.FindCloseChangeNotification(self.win_handles[0])
+            for handle in self.win_handles[1:]:
+                self.kernel.CloseHandle(handle)
+            self.win_handles.clear()
         if self.queue is not None:
             self.queue.close()
         if self.selector is not None:

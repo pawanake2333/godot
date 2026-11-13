@@ -13,7 +13,7 @@
 | EditorDebuggerSession / ScriptEditorDebugger | 暂停／继续／步进、栈变量、原生 profiler 信号与采样所有权；会话日志元数据与非活动场景路径保护 |
 | EditorLog | 有界诊断环与调试来源元数据；真实 Output 控件状态、文本查询与原生 UI handler 转发 |
 | EditorFileSystem | 重导入进度任务使用唯一标识 |
-| main / macOS DisplayServer | --hidden 离屏 GPU 绘制与可见性检查；与 headless/dummy 模式区分 |
+| main / macOS、Windows DisplayServer | --hidden 离屏 GPU 绘制与可见性检查；与 headless/dummy 模式区分 |
 | methods.py | BUILD_NAME 默认值，可由显式环境覆盖 |
 
 接口说明见 [编辑器一致性约束](editor_consistency.md) 和 [Output 指南](output_control.md)。新增能力优先薄绑定既有 API／handler，不在引擎中实现另一套自动化服务器、调试协议或业务规则。

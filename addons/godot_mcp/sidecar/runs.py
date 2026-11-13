@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import os
 import threading
 import uuid
 
@@ -12,6 +13,10 @@ class Runs:
         self.service = service
         self.records = {}
         self.lock = threading.RLock()
+        self.job = None
+        if os.name == "nt":
+            from windows_job import WindowsJob
+            self.job = WindowsJob()
 
     def start(self, args, editor):
         service = self.service
@@ -43,6 +48,13 @@ class Runs:
             output = Path(service.storage.name) / ("run-" + run_id + ".log")
             with output.open("wb") as stream:
                 process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                if self.job:
+                    self.job.assign(process)
+            except Exception:
+                process.kill()
+                process.wait()
+                raise
             record = {"run_id": run_id, "pid": process.pid, "display_mode": mode, "scene": scene, "owned": True, "process": process, "output_path": str(output)}
             self.records[run_id] = record
         try:
@@ -112,3 +124,5 @@ class Runs:
                 if process.poll() is None:
                     process.kill()
                     process.wait(timeout=5)
+        if self.job:
+            self.job.close()

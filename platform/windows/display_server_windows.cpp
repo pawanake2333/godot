@@ -3125,7 +3125,7 @@ bool DisplayServerWindows::window_can_draw(DisplayServerEnums::WindowID p_window
 
 	ERR_FAIL_COND_V(!windows.has(p_window), false);
 	const WindowData &wd = windows[p_window];
-	return !wd.minimized;
+	return !wd.minimized && IsWindowVisible(wd.hWnd);
 }
 
 bool DisplayServerWindows::can_any_window_draw() const {

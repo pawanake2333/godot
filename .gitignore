@@ -54,6 +54,9 @@ tests/data/crypto/out*
 ### General build output ###
 ############################
 
+# Local build tools and dependencies
+/.build-tools/
+
 # C/C++ generated
 *.a
 *.ax

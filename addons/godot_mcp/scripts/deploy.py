@@ -2,8 +2,8 @@
 """Generate identities and synchronize a plugin copy with local-change protection."""
 import argparse
 import json
-from pathlib import Path
 import shutil
+from pathlib import Path
 import subprocess
 import sys
 
@@ -12,6 +12,17 @@ sys.path.insert(0, str(ROOT / "sidecar"))
 from package_info import source_identity, file_hash
 
 EXCLUDED = {"__pycache__", ".godot", ".DS_Store"}
+
+
+def deployment_bytes(path):
+    data = path.read_bytes()
+    if path.suffix.lower() in {".gltf", ".glb", ".png", ".svgz"}:
+        return data
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    return data.replace(b"\r\n", b"\n")
 
 
 def deploy_files(root, *, include_tests=False):
@@ -47,7 +58,9 @@ def synchronize(source, target, *, baseline=None, check=False):
                        if present.get(name) != previous.get(name) and present.get(name) != desired.get(name))
     if conflicts:
         raise ValueError("Deployment conflicts (nothing changed): " + ", ".join(conflicts))
-    changed = sorted(name for name in set(desired) | set(present) if desired.get(name) != present.get(name))
+    changed = sorted(name for name in set(desired) | set(present)
+                     if name not in desired or name not in present or
+                     (target / name).read_bytes() != deployment_bytes(source / name))
     if tests_path.exists():
         changed.append("tests/")
     if check:
@@ -61,7 +74,7 @@ def synchronize(source, target, *, baseline=None, check=False):
         if name in desired:
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_name(path.name + ".mcp-copy")
-            shutil.copyfile(source / name, temporary)
+            temporary.write_bytes(deployment_bytes(source / name))
             temporary.replace(path)
         else:
             path.unlink()
@@ -69,7 +82,7 @@ def synchronize(source, target, *, baseline=None, check=False):
         shutil.rmtree(tests_path)
     manifest = {**source_identity(source), "files": desired}
     temporary = manifest_path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    temporary.write_bytes((json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     temporary.replace(manifest_path)
     if deploy_files(target) != desired:
         raise RuntimeError("Post-deployment hash verification failed")

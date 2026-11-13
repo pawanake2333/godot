@@ -10,11 +10,14 @@ RUNTIME_DIRS = {"contract", "editor", "runtime", "sidecar", "tools"}
 
 
 def file_hash(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1048576), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    data = Path(path).read_bytes()
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    else:
+        data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
 
 
 def source_files(root=ROOT):

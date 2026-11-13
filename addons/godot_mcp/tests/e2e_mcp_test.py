@@ -6,7 +6,9 @@ import base64
 import contextlib
 import json
 import os
-import selectors
+import queue
+import threading
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -19,13 +21,20 @@ from process_cleanup import cleanup_fixture
 class MCPClient:
     def __init__(self, sidecar: Path, project: Path | None = None, godot: Path | None = None):
         self.process = subprocess.Popen(
-            ["python3", str(sidecar), *(["--project", str(project)] if project else []), *(["--godot", str(godot)] if godot else [])],
+            [sys.executable, str(sidecar), *(["--project", str(project)] if project else []), *(["--godot", str(godot)] if godot else [])],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8",
             bufsize=1,
         )
+        self.lines = queue.Queue()
+        def read_stdout():
+            for line in self.process.stdout:
+                self.lines.put(line)
+            self.lines.put(None)
+        self.reader = threading.Thread(target=read_stdout, daemon=True)
+        self.reader.start()
         self.next_id = 1
         self.responses = {}
         self.stdout_buffer = b""
@@ -57,22 +66,16 @@ class MCPClient:
     def receive_request(self, request_id: int) -> dict[str, Any]:
         assert self.process.stdout
         deadline = time.monotonic() + 20
-        with selectors.DefaultSelector() as selector:
-            selector.register(self.process.stdout, selectors.EVENT_READ)
-            while request_id not in self.responses:
-                if b"\n" not in self.stdout_buffer:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0 or not selector.select(timeout=remaining):
-                        raise TimeoutError(f"MCP request timed out: {request_id}")
-                    chunk = os.read(self.process.stdout.fileno(), 65536)
-                    if not chunk:
-                        stderr = self.process.stderr.read() if self.process.stderr else ""
-                        raise RuntimeError(f"MCP sidecar exited without a response: {stderr}")
-                    self.stdout_buffer += chunk
-                    continue
-                line, self.stdout_buffer = self.stdout_buffer.split(b"\n", 1)
-                response = json.loads(line)
-                self.responses[response["id"]] = response
+        while request_id not in self.responses:
+            try:
+                line = self.lines.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise TimeoutError(f"MCP request timed out: {request_id}")
+            if line is None:
+                stderr = self.process.stderr.read() if self.process.stderr else ""
+                raise RuntimeError(f"MCP sidecar exited without a response: {stderr}")
+            response = json.loads(line)
+            self.responses[response["id"]] = response
         response = self.responses.pop(request_id)
         if "error" in response:
             raise AssertionError(f"MCP JSON-RPC error: {response['error']}")
@@ -101,6 +104,7 @@ def main() -> int:
     parser.add_argument("--sidecar", type=Path, required=True)
     parser.add_argument("--require-capture", action="store_true")
     parser.add_argument("--hidden-gpu", action="store_true")
+    parser.add_argument("--gpu-driver", choices=["d3d12", "vulkan", "opengl3", "metal"])
     parser.add_argument("--visible", action="store_true", help="Explicitly permit normal development test windows.")
     parser.add_argument("--project", type=Path)
     parser.add_argument("--task-godot", type=Path)
@@ -222,7 +226,7 @@ def main() -> int:
         assert client.call("godot_tools_call", {"tool_name": "godot_editor_status", "arguments": {}})["state"]["project_path"] == state["project_path"]
         assert client.call("godot_editor_status")["connected"]
         if args.task_godot:
-            variant = subprocess.run([str(args.task_godot), "--headless", "--path", str(args.project), "--script", "res://value_protocol.gd"], capture_output=True, text=True, timeout=15)
+            variant = subprocess.run([str(args.task_godot), "--headless", "--path", str(args.project), "--script", "res://value_protocol.gd"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             assert variant.returncode == 0 and "MCP_VARIANT_PROTOCOL_OK" in variant.stdout, (variant.stdout, variant.stderr)
             report["variant_codec_standalone_test"] = True
 
@@ -676,7 +680,7 @@ def main() -> int:
         document = client.call("godot_scene_list")["active"]
         assert client.call("godot_editor_select", {"scene_id": document["scene_id"], "node_paths": ["AnimationPlayer"]})["selected_nodes"] == 1
         if args.task_godot:
-            compiled = subprocess.run([str(args.task_godot), "--headless", "--path", str(args.project), "--check-only", "--script", "res://validate_only.gd"], capture_output=True, text=True, timeout=15)
+            compiled = subprocess.run([str(args.task_godot), "--headless", "--path", str(args.project), "--check-only", "--script", "res://validate_only.gd"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             assert compiled.returncode == 0 and "VALIDATION_MUST_NOT_EXECUTE" not in compiled.stdout + compiled.stderr, (compiled.stdout, compiled.stderr)
         report["live_project_settings_and_selection"] = True
 
@@ -965,7 +969,7 @@ def main() -> int:
         finally:
             observer.close()
         cli = subprocess.run(
-            ["python3", str(args.sidecar), "--project", state["project_path"], "--call", "godot_editor_status"],
+            [sys.executable, str(args.sidecar), "--project", state["project_path"], "--call", "godot_editor_status"],
             capture_output=True, text=True, check=True, timeout=20,
         )
         assert json.loads(cli.stdout)["structuredContent"]["state"]["runtime_session_active"]
@@ -1096,19 +1100,21 @@ def main() -> int:
                 owned = terminated_client.call("godot_job_wait", {"job_id": submitted["job_id"], "timeout_ms": 15000})
                 assert owned["state"] == "succeeded", owned
                 owned_pid = owned["result"]["pid"]
-                terminated_client.process.terminate()
-                terminated_client.process.wait(timeout=15)
-                try:
-                    os.kill(owned_pid, 0)
-                except ProcessLookupError:
-                    pass
-                else:
-                    raise AssertionError("Terminated sidecar left its owned game process behind")
+                from lifecycle import Watch
+                with contextlib.closing(Watch(Path(args.project), owned_pid)) as watcher:
+                    terminated_client.process.terminate()
+                    terminated_client.process.wait(timeout=15)
+                    deadline = time.monotonic() + 10
+                    while True:
+                        if any(event["process_exit"] for event in watcher.wait(max(0, deadline - time.monotonic()))):
+                            break
+                        if time.monotonic() >= deadline:
+                            raise AssertionError("Terminated sidecar left its owned game process behind")
                 report["sidecar_signal_reaps_owned_games"] = True
             finally:
                 terminated_client.close()
             if args.hidden_gpu or args.visible:
-                gpu = finish_job(client.call("godot_run_start", {"display_mode": "visible" if args.visible else "hidden_gpu", **({"rendering_method": "mobile", "rendering_driver": "metal"} if os.uname().sysname == "Darwin" else {})}))
+                gpu = finish_job(client.call("godot_run_start", {"display_mode": "visible" if args.visible else "hidden_gpu", **({"rendering_method": "mobile", "rendering_driver": args.gpu_driver} if args.gpu_driver else {"rendering_method": "mobile", "rendering_driver": "metal"} if sys.platform == "darwin" else {})}))
                 try:
                     gpu_session = gpu["session_id"]
                     client.call("godot_run_wait", {"run_id": gpu["run_id"], "stage": "first_render"})
@@ -1119,7 +1125,9 @@ def main() -> int:
                     assert any(item["type"] == "image" and base64.b64decode(item["data"]).startswith(b"\x89PNG") for item in capture_message["content"])
                     assert capture["width"] == 320 and capture["height"] == 180 and capture["window_visible"] == args.visible, capture
                     assert capture["center_rgba"][1] > 0.9 and capture["center_rgba"][0] < 0.1, capture
-                    if os.uname().sysname == "Darwin":
+                    if args.gpu_driver:
+                        assert capture["driver"] == args.gpu_driver, capture
+                    elif sys.platform == "darwin":
                         assert capture["driver"] == "metal", capture
                     png = client.call("godot_artifact_read", {"artifact_id": capture["artifact_id"]})
                     assert png["mime_type"] == "image/png" and base64.b64decode(png["data"]).startswith(b"\x89PNG"), png
@@ -1191,12 +1199,12 @@ def run_isolated(args: argparse.Namespace) -> int:
         if not args.require_capture and not args.visible:
             with project_settings.open("a", encoding="utf-8") as settings_file:
                 settings_file.write('\n[editor]\nrun/main_run_args="--headless"\n')
-        prepared = subprocess.run([str(args.godot.resolve()), "--headless", "--path", str(project), "--script", "res://prepare_pose.gd"], capture_output=True, text=True, timeout=20)
+        prepared = subprocess.run([str(args.godot.resolve()), "--headless", "--path", str(project), "--script", "res://prepare_pose.gd"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
         assert prepared.returncode == 0 and "SCRIPT ERROR" not in prepared.stderr, (prepared.stdout, prepared.stderr)
         # A fresh import ensures global scripted node classes are available before plugin loading.
         imported = subprocess.run(
             [str(args.godot.resolve()), "--headless", "--editor", "--path", str(project), "--quit"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
         )
         if imported.returncode or "SCRIPT ERROR" in imported.stderr:
             raise AssertionError(f"Fixture import failed:\n{imported.stdout}\n{imported.stderr}")
@@ -1218,36 +1226,34 @@ def run_isolated(args: argparse.Namespace) -> int:
             try:
                 deadline = time.monotonic() + 30
                 endpoint_path = project / ".godot/mcp/endpoint.json"
-                # macOS vnode notifications wait for directory changes, without polling sleeps.
-                fd = os.open(project / ".godot/mcp", os.O_RDONLY)
-                try:
-                    with contextlib.closing(select_kqueue(fd)) as queue:
-                        def endpoint_matches():
-                            try:
-                                return json.loads(endpoint_path.read_text()).get("pid") == editor.pid
-                            except (OSError, ValueError):
-                                return False
-                        while not endpoint_matches():
-                            if editor.poll() is not None:
-                                raise AssertionError(log_path.read_text())
-                            remaining = deadline - time.monotonic()
-                            if remaining <= 0:
-                                raise TimeoutError(log_path.read_text())
-                            queue.control(None, 1, min(remaining, 1))
-                finally:
-                    os.close(fd)
-                command = ["python3", str(Path(__file__).resolve()), "--sidecar", str(args.sidecar.resolve()), "--project", str(project), "--task-godot", str(args.godot.resolve())]
+                from lifecycle import Watch
+                with contextlib.closing(Watch(project / ".godot/mcp", editor.pid)) as watcher:
+                    def endpoint_matches():
+                        try:
+                            return json.loads(endpoint_path.read_text()).get("pid") == editor.pid
+                        except (OSError, ValueError):
+                            return False
+                    while not endpoint_matches():
+                        if editor.poll() is not None:
+                            raise AssertionError(log_path.read_text(encoding="utf-8", errors="replace"))
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError(log_path.read_text(encoding="utf-8", errors="replace"))
+                        watcher.wait(remaining)
+                command = [sys.executable, str(Path(__file__).resolve()), "--sidecar", str(args.sidecar.resolve()), "--project", str(project), "--task-godot", str(args.godot.resolve())]
                 if args.require_capture:
                     command.append("--require-capture")
                 if args.hidden_gpu:
                     command.append("--hidden-gpu")
+                if args.gpu_driver:
+                    command.extend(["--gpu-driver", args.gpu_driver])
                 if args.visible:
                     command.append("--visible")
-                tested = subprocess.run(command, capture_output=True, text=True, timeout=120)
+                tested = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
                 print(tested.stdout, end="")
                 if tested.returncode:
-                    raise AssertionError(f"{tested.stderr}\nEditor log:\n{log_path.read_text()[-65536:]}")
-                text = log_path.read_text()
+                    raise AssertionError(f"{tested.stderr}\nEditor log:\n{log_path.read_text(encoding="utf-8", errors="replace")[-65536:]}")
+                text = log_path.read_text(encoding="utf-8", errors="replace")
                 assert "SCRIPT ERROR" not in text and "Parse Error" not in text, text
                 unexpected_errors = [line for line in text.splitlines() if "ERROR:" in line and "MCP fixture error" not in line]
                 lines = text.splitlines()
@@ -1255,7 +1261,11 @@ def run_isolated(args: argparse.Namespace) -> int:
                 assert not unexpected_errors, contexts
                 return 0
             finally:
-                cleanup_fixture(project, args.godot.resolve())
+                if sys.platform == "win32":
+                    if editor.poll() is None:
+                        editor.terminate()
+                else:
+                    cleanup_fixture(project, args.godot.resolve())
                 editor.wait(timeout=15)
 
 

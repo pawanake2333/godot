@@ -391,7 +391,7 @@ func _package_identity() -> Dictionary:
 		return {"verified": false, "reason": "package.json missing; generate it with scripts/deploy.py --manifest"}
 	var mismatches: Array[String] = []
 	for path in data.get("files", {}):
-		if FileAccess.get_sha256("res://addons/godot_mcp/" + path) != data.files[path]:
+		if FileAccess.get_file_as_string("res://addons/godot_mcp/" + path).replace("\r\n", "\n").sha256_text() != data.files[path]:
 			mismatches.append(path)
 	return {"verified": mismatches.is_empty(), "version": data.get("version"), "protocol": data.get("protocol"), "source_sha256": data.get("source_sha256"), "mismatches": mismatches}
 

@@ -48,7 +48,7 @@ LOCAL_TOOLS.extend([
 
 
 LOCAL_TOOLS.extend([
-    tool("godot_run_start", "Start an owned isolated game process and wait for its exact PID and tree_ready handshake.", {"rendering_method": {"type": "string", "enum": ["mobile", "forward_plus", "gl_compatibility"]}, "rendering_driver": {"type": "string", "enum": ["metal", "vulkan", "opengl3"]}, "scene": STRING, "display_mode": {"type": "string", "enum": ["headless_logic", "hidden_gpu", "visible"]}, "arguments": {"type": "array", "maxItems": 64, "items": {"type": "string"}}, "timeout_ms": TIMEOUT}),
+    tool("godot_run_start", "Start an owned isolated game process and wait for its exact PID and tree_ready handshake.", {"rendering_method": {"type": "string", "enum": ["mobile", "forward_plus", "gl_compatibility"]}, "rendering_driver": {"type": "string", "enum": ["metal", "vulkan", "d3d12", "opengl3"]}, "scene": STRING, "display_mode": {"type": "string", "enum": ["headless_logic", "hidden_gpu", "visible"]}, "arguments": {"type": "array", "maxItems": 64, "items": {"type": "string"}}, "timeout_ms": TIMEOUT}),
     tool("godot_run_stop", "Stop an owned run by identity and wait for actual process exit.", {"run_id": STRING, "timeout_ms": TIMEOUT}, ["run_id"]),
     tool("godot_run_list", "List authenticated debug sessions and sidecar-owned runs.", {"include_stopped": {"type": "boolean"}}),
     tool("godot_run_wait", "Wait for an exact run stage; headless rendering never reports first_render.", {"run_id": STRING, "stage": {"type": "string", "enum": ["connected", "tree_ready", "first_physics", "first_render", "exited"]}, "minimum_sessions": {"type": "integer", "minimum": 1, "maximum": 16}, "timeout_ms": TIMEOUT}),
@@ -70,6 +70,11 @@ class Services:
         self.service_id = uuid.uuid4().hex
         self.toolset = toolset
         self.executable = executable or os.environ.get("GODOT_MCP_EXECUTABLE")
+        if os.name == "nt" and self.executable and str(self.executable).lower().endswith(".console.exe"):
+            gui_executable = Path(str(self.executable)[:-len(".console.exe")] + ".exe")
+            if not gui_executable.is_file():
+                raise ValueError("The Godot console launcher requires its matching editor executable")
+            self.executable = gui_executable
         self.condition = threading.Condition(threading.RLock())
         self.jobs = {}
         self.artifacts = {}

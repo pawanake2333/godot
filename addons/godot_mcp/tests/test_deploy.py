@@ -10,6 +10,20 @@ spec.loader.exec_module(deploy)
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_line_endings_are_portable_and_deployment_uses_lf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = [Path(directory) / name for name in ("source", "target")]
+            source.mkdir()
+            (source / "plugin.cfg").write_bytes(b"first\nsecond\n")
+            (source / "asset.gltf").write_bytes(b'{\r\n"asset": {}\r\n}\r\n')
+            deploy.synchronize(source, target)
+            self.assertEqual((target / "plugin.cfg").read_bytes(), b"first\nsecond\n")
+            self.assertEqual((target / "asset.gltf").read_bytes(), (source / "asset.gltf").read_bytes())
+            self.assertTrue(deploy.synchronize(source, target, check=True)["matches"])
+            (target / "plugin.cfg").write_bytes(b"first\r\nsecond\r\n")
+            deploy.synchronize(source, target)
+            self.assertEqual((target / "plugin.cfg").read_bytes(), b"first\nsecond\n")
+
     def test_sync_detects_edits_deletions_and_unknown_files_before_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             source, target = [Path(directory) / name for name in ("source", "target")]
@@ -78,7 +92,12 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "conflicts"):
                 deploy.synchronize(source, target)
             (target / "tests/local.py").unlink()
-            (target / "tests/link").symlink_to(source / "plugin.cfg")
+            try:
+                (target / "tests/link").symlink_to(source / "plugin.cfg")
+            except OSError as error:
+                if getattr(error, "winerror", None) == 1314:
+                    self.skipTest("Creating Windows symlinks requires developer mode or elevated privilege")
+                raise
             with self.assertRaisesRegex(ValueError, "symlink"):
                 deploy.synchronize(source, target)
             self.assertTrue((target / "tests/link").is_symlink())

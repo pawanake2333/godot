@@ -230,6 +230,7 @@ void OS_MacOS::initialize_core() {
 }
 
 void OS_MacOS::finalize() {
+	_cleanup_temporary_libraries();
 	if (is_sandboxed()) {
 		NSArray *bookmarks = [[NSUserDefaults standardUserDefaults] arrayForKey:@"sec_bookmarks"];
 		for (id bookmark in bookmarks) {
@@ -416,14 +417,75 @@ Error OS_MacOS::open_dynamic_library(const String &p_path, void *&p_library_hand
 		path = p_path;
 	}
 
-	p_library_handle = dlopen(path.utf8().get_data(), RTLD_NOW);
-	ERR_FAIL_NULL_V_MSG(p_library_handle, ERR_CANT_OPEN, vformat("Can't open dynamic library: %s. Error: %s.", p_path, dlerror()));
+	String load_path = path;
+	const bool temporary = p_data != nullptr && p_data->generate_temp_files;
+	if (temporary) {
+		// dyld may retain an image after dlclose (for example, when it owns TLS).
+		// A distinct path for each load prevents reusing the previous image. Keep
+		// the copy beside the original so @loader_path dependencies still work.
+		{
+			MutexLock lock(dynamic_library_mutex);
+			load_path = vformat("%s.%s.%s~", path, get_process_id(), ++dynamic_library_serial);
+		}
+		Error copy_error = DirAccess::copy_absolute(path, load_path);
+		ERR_FAIL_COND_V_MSG(copy_error != OK, copy_error, vformat("Can't copy dynamic library for reloading: %s.", path));
+	}
+
+	p_library_handle = dlopen(load_path.utf8().get_data(), RTLD_NOW);
+	if (p_library_handle == nullptr) {
+		String error = String::utf8(dlerror());
+		if (temporary) {
+			DirAccess::remove_absolute(load_path);
+		}
+		ERR_FAIL_V_MSG(ERR_CANT_OPEN, vformat("Can't open dynamic library: %s. Error: %s.", p_path, error));
+	}
+	if (temporary) {
+		MutexLock lock(dynamic_library_mutex);
+		temporary_libraries[p_library_handle].push_back(load_path);
+	}
 
 	if (p_data != nullptr && p_data->r_resolved_path != nullptr) {
 		*p_data->r_resolved_path = path;
 	}
 
 	return OK;
+}
+
+Error OS_MacOS::close_dynamic_library(void *p_library_handle) {
+	Error error = OS_Unix::close_dynamic_library(p_library_handle);
+	if (error != OK) {
+		return error;
+	}
+	String temporary_path;
+	{
+		MutexLock lock(dynamic_library_mutex);
+		Vector<String> *paths = temporary_libraries.getptr(p_library_handle);
+		if (paths != nullptr) {
+			temporary_path = paths->get(paths->size() - 1);
+			paths->resize(paths->size() - 1);
+			if (paths->is_empty()) {
+				temporary_libraries.erase(p_library_handle);
+			}
+		}
+	}
+	if (!temporary_path.is_empty()) {
+		DirAccess::remove_absolute(temporary_path);
+	}
+	return OK;
+}
+
+void OS_MacOS::_cleanup_temporary_libraries() {
+	MutexLock lock(dynamic_library_mutex);
+	for (const KeyValue<void *, Vector<String>> &entry : temporary_libraries) {
+		for (const String &path : entry.value) {
+			DirAccess::remove_absolute(path);
+		}
+	}
+	temporary_libraries.clear();
+}
+
+OS_MacOS::~OS_MacOS() {
+	_cleanup_temporary_libraries();
 }
 
 MainLoop *OS_MacOS::get_main_loop() const {

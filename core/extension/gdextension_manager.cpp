@@ -156,6 +156,23 @@ GDExtensionManager::LoadStatus GDExtensionManager::load_extension_with_loader(co
 }
 
 GDExtensionManager::LoadStatus GDExtensionManager::reload_extension(const String &p_path) {
+	LoadStatus status = _reload_extension_internal(p_path);
+#ifdef TOOLS_ENABLED
+	if (status == LOAD_STATUS_OK) {
+		_queue_script_reload();
+	}
+#endif
+	return status;
+}
+
+Dictionary GDExtensionManager::get_reload_state() const {
+	Dictionary state;
+	state["requested_revision"] = requested_reload_revision;
+	state["completed_revision"] = completed_reload_revision;
+	return state;
+}
+
+GDExtensionManager::LoadStatus GDExtensionManager::_reload_extension_internal(const String &p_path) {
 #ifndef TOOLS_ENABLED
 	ERR_FAIL_V_MSG(LOAD_STATUS_FAILED, "GDExtensions can only be reloaded in an editor build.");
 #else
@@ -313,10 +330,16 @@ void GDExtensionManager::untrack_instance_binding(void *p_token, Object *p_objec
 	}
 }
 
-void GDExtensionManager::_reload_all_scripts() {
+void GDExtensionManager::_queue_script_reload() {
+	emit_signal("extensions_reloaded");
+	callable_mp_static(&GDExtensionManager::_reload_all_scripts).call_deferred(++requested_reload_revision);
+}
+
+void GDExtensionManager::_reload_all_scripts(uint64_t p_revision) {
 	for (int i = 0; i < ScriptServer::get_language_count(); i++) {
 		ScriptServer::get_language(i)->reload_all_scripts();
 	}
+	singleton->completed_reload_revision = MAX(singleton->completed_reload_revision, p_revision);
 }
 #endif // TOOLS_ENABLED
 
@@ -350,15 +373,12 @@ void GDExtensionManager::reload_extensions() {
 
 		if (E.value->has_library_changed()) {
 			reloaded = true;
-			reload_extension(E.value->get_path());
+			_reload_extension_internal(E.value->get_path());
 		}
 	}
 
 	if (reloaded) {
-		emit_signal("extensions_reloaded");
-
-		// Reload all scripts to clear out old references.
-		callable_mp_static(&GDExtensionManager::_reload_all_scripts).call_deferred();
+		_queue_script_reload();
 	}
 #endif
 }
@@ -418,11 +438,7 @@ bool GDExtensionManager::ensure_extensions_loaded(const HashSet<String> &p_exten
 
 #ifdef TOOLS_ENABLED
 	if (extensions_added.size() || extensions_removed.size()) {
-		// Emitting extensions_reloaded so EditorNode can reload Inspector and regenerate documentation.
-		emit_signal("extensions_reloaded");
-
-		// Reload all scripts to clear out old references.
-		callable_mp_static(&GDExtensionManager::_reload_all_scripts).call_deferred();
+		_queue_script_reload();
 	}
 #endif
 
@@ -468,6 +484,7 @@ void GDExtensionManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load_extension", "path"), &GDExtensionManager::load_extension);
 	ClassDB::bind_method(D_METHOD("load_extension_from_function", "path", "init_func"), &GDExtensionManager::load_extension_from_function);
 	ClassDB::bind_method(D_METHOD("reload_extension", "path"), &GDExtensionManager::reload_extension);
+	ClassDB::bind_method(D_METHOD("get_reload_state"), &GDExtensionManager::get_reload_state);
 	ClassDB::bind_method(D_METHOD("unload_extension", "path"), &GDExtensionManager::unload_extension);
 	ClassDB::bind_method(D_METHOD("is_extension_loaded", "path"), &GDExtensionManager::is_extension_loaded);
 

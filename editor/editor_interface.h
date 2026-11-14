@@ -114,6 +114,7 @@ public:
 	Dictionary clear_editor_output(const String &p_scope = "panel", int64_t p_through_cursor = -1);
 	Dictionary read_editor_output(int p_offset = 0, int p_max_chars = 16384) const;
 	bool is_editor_ready() const;
+	bool is_extension_reload_complete(int64_t p_revision) const;
 	bool is_scene_class(const StringName &p_class) const;
 	bool is_resource_read_only(const Ref<Resource> &p_resource) const;
 	bool is_scene_node_inherited(Node *p_scene_root, Node *p_node) const;

@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 PROTOCOL = 2
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIRS = {"contract", "editor", "runtime", "sidecar", "tools"}

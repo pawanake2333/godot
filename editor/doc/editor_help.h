@@ -187,6 +187,8 @@ class EditorHelp : public VBoxContainer {
 	void _toggle_files_pressed();
 
 	inline static int doc_generation_count = 0;
+	inline static bool doc_cleanup_started = false;
+	inline static SafeFlag doc_generation_pending = SafeFlag(false);
 	inline static String doc_version_hash;
 	inline static Thread worker_thread;
 	inline static Thread loader_thread; // Only load scripts here to avoid deadlocking with main thread.
@@ -199,7 +201,7 @@ class EditorHelp : public VBoxContainer {
 	static void _wait_for_thread(Thread &p_thread = worker_thread);
 	static void _load_doc_thread(void *p_udata);
 	static void _gen_doc_thread(void *p_udata);
-	static void _gen_extensions_docs();
+	static void _gen_extensions_docs(int p_generation);
 	static void _process_postponed_docs();
 	static void _load_script_doc_cache_thread(void *p_udata);
 	static void _regen_script_doc_thread(void *p_udata);
@@ -226,6 +228,7 @@ protected:
 
 public:
 	static void generate_doc(bool p_use_cache = true, bool p_use_script_cache = true);
+	static bool is_doc_generation_pending() { return doc_generation_pending.is_set(); }
 	static void cleanup_doc();
 	static void load_script_doc_cache();
 	static void regenerate_script_doc_cache();

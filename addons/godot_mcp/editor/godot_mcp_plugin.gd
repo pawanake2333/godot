@@ -3,6 +3,8 @@ extends EditorPlugin
 
 const EditorTools = preload("res://addons/godot_mcp/tools/editor_tools.gd")
 var _editor_tools: RefCounted
+const Extensions = preload("res://addons/godot_mcp/tools/extensions.gd")
+var _extensions := Extensions.new()
 
 const RuntimeDebugger = preload("res://addons/godot_mcp/editor/runtime_debugger.gd")
 const RUNTIME_AUTOLOAD_NAME := "GodotMCPRuntime"
@@ -34,6 +36,7 @@ func _enter_tree() -> void:
 			return
 	get_undo_redo().history_changed.connect(_on_history_changed)
 	get_undo_redo().version_changed.connect(_on_history_changed)
+	GDExtensionManager.extensions_reloaded.connect(_on_history_changed)
 	_package = _package_identity()
 	if FileAccess.file_exists(ENDPOINT_PATH):
 		var existing = JSON.parse_string(FileAccess.get_file_as_string(ENDPOINT_PATH))
@@ -205,6 +208,16 @@ func _handle_line(line: String, peer: StreamPeerTCP) -> void:
 
 
 func _invoke_tool(request_id: Variant, tool: String, arguments: Dictionary) -> void:
+	if tool in ["_extension_reload_begin", "_extension_reload_complete"]:
+		# The sidecar retains the ticket across deferred script-language reloads;
+		# no suspended GDScript request survives a reload of its own script.
+		var response: Dictionary = _extensions.begin(arguments, _get_editor_state()) if tool == "_extension_reload_begin" else _extensions.complete(arguments, _get_editor_state())
+		if response.ok:
+			response.result["document_revision"] = _document_revision()
+			_send_ok(request_id, response.result)
+		else:
+			_send_error(request_id, response.error.code, response.error.message, response.error.get("data", {}))
+		return
 	if tool == "godot_output_control":
 		_output_control(request_id, arguments)
 		return
@@ -377,10 +390,10 @@ func _get_editor_state() -> Dictionary:
 		"open_scenes": Array(EditorInterface.get_open_scenes()),
 		"unsaved_scenes": Array(EditorInterface.get_unsaved_scenes()),
 		"filesystem_scanning": EditorInterface.get_resource_filesystem().is_scanning(),
-		"mcp_version": "0.6.1",
+		"mcp_version": "0.6.2",
 		"engine_build": Engine.get_version_info(),
 		"package": _package,
-		"native_api": {"editor_consistency": EditorInterface.has_method("edit_inspector_properties") and EditorInterface.has_method("add_undo_redo_property_change") and EditorInterface.has_method("add_scene_node_path_changes") and ClassDB.class_has_method("EditorUndoRedoManager", "undo_history") and ClassDB.class_has_method("ScriptEditor", "set_breakpoint"), "output_panel": EditorInterface.has_method("get_editor_output_state") and EditorInterface.has_method("clear_editor_output") and EditorInterface.has_method("configure_editor_output") and EditorInterface.has_method("read_editor_output"), "new_scene": EditorInterface.has_method("new_scene"), "get_editor_log": EditorInterface.has_method("get_editor_log"), "debugger_server": EditorInterface.has_method("start_debugger_server") and EditorInterface.has_method("get_debugger_server_uri"), "script_document_resource": ClassDB.class_has_method("ScriptEditorBase", "get_edited_resource"), "debug_control": ClassDB.class_has_method("EditorDebuggerSession", "debug_control"), "stack_variables": ClassDB.class_has_method("EditorDebuggerSession", "request_stack_variables"), "profiler_frames": ClassDB.class_has_signal("EditorDebuggerSession", "profiler_frame")},
+		"native_api": {"extension_reload": ClassDB.class_has_method("GDExtension", "get_registered_classes") and ClassDB.class_has_method("GDExtension", "get_library_path") and ClassDB.class_has_method("GDExtensionManager", "get_reload_state") and EditorInterface.has_method("is_extension_reload_complete"), "editor_consistency": EditorInterface.has_method("edit_inspector_properties") and EditorInterface.has_method("add_undo_redo_property_change") and EditorInterface.has_method("add_scene_node_path_changes") and ClassDB.class_has_method("EditorUndoRedoManager", "undo_history") and ClassDB.class_has_method("ScriptEditor", "set_breakpoint"), "output_panel": EditorInterface.has_method("get_editor_output_state") and EditorInterface.has_method("clear_editor_output") and EditorInterface.has_method("configure_editor_output") and EditorInterface.has_method("read_editor_output"), "new_scene": EditorInterface.has_method("new_scene"), "get_editor_log": EditorInterface.has_method("get_editor_log"), "debugger_server": EditorInterface.has_method("start_debugger_server") and EditorInterface.has_method("get_debugger_server_uri"), "script_document_resource": ClassDB.class_has_method("ScriptEditorBase", "get_edited_resource"), "debug_control": ClassDB.class_has_method("EditorDebuggerSession", "debug_control"), "stack_variables": ClassDB.class_has_method("EditorDebuggerSession", "request_stack_variables"), "profiler_frames": ClassDB.class_has_signal("EditorDebuggerSession", "profiler_frame")},
 		"native_log_available": EditorInterface.has_method("get_editor_log"),
 	}
 
@@ -535,8 +548,8 @@ func _send_ok(request_id: Variant, result: Variant) -> void:
 	_send_message({"id": request_id, "ok": true, "result": result, "context": _context(request_id, result)})
 
 
-func _send_error(request_id: Variant, code: String, message: String) -> void:
-	_send_message({"id": request_id, "ok": false, "error": {"code": code, "message": message, "stage": "editor"}, "context": _context(request_id)})
+func _send_error(request_id: Variant, code: String, message: String, data: Dictionary = {}) -> void:
+	_send_message({"id": request_id, "ok": false, "error": {"code": code, "message": message, "stage": "editor", "data": data}, "context": _context(request_id)})
 
 
 func _send_message(message: Dictionary) -> void:

@@ -19,7 +19,7 @@ class SidecarTests(unittest.TestCase):
     def test_catalog_is_available_without_editor(self):
         bridge = Mock()
         response = server.handle_message({"id": 1, "method": "tools/list"}, bridge)
-        self.assertEqual(len(response["result"]["tools"]), 24)
+        self.assertEqual(len(response["result"]["tools"]), 25)
         bridge.invoke.assert_not_called()
 
     def test_local_discovery_and_capabilities_do_not_require_editor(self):

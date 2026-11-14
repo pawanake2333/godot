@@ -33,6 +33,7 @@
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
+#include "core/extension/gdextension_manager.h"
 #include "core/io/resource_loader.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
@@ -40,6 +41,7 @@
 #include "editor/docks/filesystem_dock.h"
 #include "editor/docks/inspector_dock.h"
 #include "editor/docks/scene_tree_dock.h"
+#include "editor/doc/editor_help.h"
 #include "editor/editor_log.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
@@ -94,6 +96,14 @@ bool EditorInterface::is_scene_class(const StringName &p_class) const {
 
 bool EditorInterface::is_editor_ready() const {
 	return EditorNode::get_singleton()->is_editor_ready();
+}
+
+bool EditorInterface::is_extension_reload_complete(int64_t p_revision) const {
+	if (p_revision < 0 || EditorNode::get_singleton()->is_exiting() || EditorHelp::is_doc_generation_pending()) {
+		return false;
+	}
+	Dictionary state = GDExtensionManager::get_singleton()->get_reload_state();
+	return int64_t(state["completed_revision"]) >= p_revision;
 }
 
 bool EditorInterface::is_scene_node_inherited(Node *p_scene_root, Node *p_node) const {
@@ -1005,6 +1015,7 @@ void EditorInterface::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_resource_read_only", "resource"), &EditorInterface::is_resource_read_only);
 	ClassDB::bind_method(D_METHOD("is_scene_class", "class"), &EditorInterface::is_scene_class);
 	ClassDB::bind_method(D_METHOD("is_editor_ready"), &EditorInterface::is_editor_ready);
+	ClassDB::bind_method(D_METHOD("is_extension_reload_complete", "revision"), &EditorInterface::is_extension_reload_complete);
 	ClassDB::bind_method(D_METHOD("is_scene_node_inherited", "scene_root", "node"), &EditorInterface::is_scene_node_inherited);
 	ClassDB::bind_method(D_METHOD("add_scene_node_path_changes", "scene_root", "paths"), &EditorInterface::add_scene_node_path_changes);
 	ClassDB::bind_method(D_METHOD("edit_inspector_properties", "object", "changes"), &EditorInterface::edit_inspector_properties);

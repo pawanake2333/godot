@@ -200,16 +200,20 @@ def main() -> int:
         assert initialized["serverInfo"]["name"] == "godot-mcp"
 
         default_tools = client.request("tools/list")["tools"]
-        assert len(default_tools) == 24 and all(tool["_meta"]["godot/tier"] == "core" for tool in default_tools)
+        assert len(default_tools) == 25 and all(tool["_meta"]["godot/tier"] == "core" for tool in default_tools)
         tools = client.call("godot_tools_discover", {"include_schema": True, "limit": 128})["tools"]
         tool_names = {tool["name"] for tool in tools}
         required = {"godot_editor_status", "godot_scene_list", "godot_scene_open", "godot_scene_close", "godot_run_start", "godot_run_stop", "godot_scene_tree", "godot_object_inspect", "godot_object_set_properties", "godot_input_send"}
-        assert required <= tool_names and len(tools) == 62, tool_names
+        assert required <= tool_names and len(tools) == 63, tool_names
         report["tool_count"] = len(tools)
         report["default_tool_count"] = len(default_tools)
 
         initial_state_result = client.request("tools/call", {"name": "godot_editor_status", "arguments": {}})
         state = initial_state_result["structuredContent"]["state"]
+        rejected_reload = client.call("godot_extension_reload", {"path": "res://missing.gdextension", "editor_epoch": state["editor_epoch"], "expected_document_revision": state["document_revision"]})
+        rejected_done = client.call("godot_job_wait", {"job_id": rejected_reload["job_id"], "timeout_ms": 15000})
+        assert rejected_done["state"] == "failed" and "FILE_NOT_FOUND" in rejected_done["error"], rejected_done
+        report["extension_reload_preflight"] = True
         assert initial_state_result["_meta"]["godot"]["scope"] == "sidecar"
         assert initial_state_result["_meta"]["godot"]["protocol"] == 2
         assert "4.7.2-stable" in state["godot_version"]
@@ -1252,7 +1256,7 @@ def run_isolated(args: argparse.Namespace) -> int:
                 tested = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
                 print(tested.stdout, end="")
                 if tested.returncode:
-                    raise AssertionError(f"{tested.stderr}\nEditor log:\n{log_path.read_text(encoding="utf-8", errors="replace")[-65536:]}")
+                    raise AssertionError(f"{tested.stderr}\nEditor log:\n{log_path.read_text(encoding='utf-8', errors='replace')[-65536:]}")
                 text = log_path.read_text(encoding="utf-8", errors="replace")
                 assert "SCRIPT ERROR" not in text and "Parse Error" not in text, text
                 unexpected_errors = [line for line in text.splitlines() if "ERROR:" in line and "MCP fixture error" not in line]

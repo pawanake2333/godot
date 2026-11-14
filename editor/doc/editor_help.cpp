@@ -3038,7 +3038,7 @@ void EditorHelp::_load_doc_thread(void *p_udata) {
 			callable_mp_static(&EditorHelp::load_script_doc_cache).call_deferred();
 		}
 		// Extensions' docs are not cached. Generate them now (on the main thread).
-		callable_mp_static(&EditorHelp::_gen_extensions_docs).call_deferred();
+		callable_mp_static(&EditorHelp::_gen_extensions_docs).call_deferred(doc_generation_count);
 	} else {
 		// We have to go back to the main thread to start from scratch, bypassing any possibly existing cache.
 		callable_mp_static(&EditorHelp::generate_doc).call_deferred(false, use_script_cache);
@@ -3078,21 +3078,30 @@ void EditorHelp::_gen_doc_thread(void *p_udata) {
 	}
 
 	OS::get_singleton()->benchmark_end_measure("EditorHelp", vformat("Generate Documentation (Run %d)", doc_generation_count));
+	doc_generation_pending.clear();
 }
 
-void EditorHelp::_gen_extensions_docs() {
+void EditorHelp::_gen_extensions_docs(int p_generation) {
+	// A worker can enqueue this callback before a newer reload or editor exit.
+	if (doc_cleanup_started || doc == nullptr || p_generation != doc_generation_count) {
+		return;
+	}
 	doc->generate((DocTools::GENERATE_FLAG_SKIP_BASIC_TYPES | DocTools::GENERATE_FLAG_EXTENSION_CLASSES_ONLY));
 
 	// Append extra doc data, as it gets overridden by the generation step.
 	if (ext_doc) {
 		doc->merge_from(*ext_doc);
 	}
+	doc_generation_pending.clear();
 }
 static void _load_script_doc_cache(bool p_changes) {
 	EditorHelp::load_script_doc_cache();
 }
 
 void EditorHelp::load_script_doc_cache() {
+	if (doc_cleanup_started) {
+		return;
+	}
 	if (!ProjectSettings::get_singleton()->is_project_loaded()) {
 		print_verbose("Skipping loading script doc cache since no project is open.");
 		return;
@@ -3167,6 +3176,9 @@ static void _regenerate_script_doc_cache(bool p_changes) {
 }
 
 void EditorHelp::regenerate_script_doc_cache() {
+	if (doc_cleanup_started) {
+		return;
+	}
 	if (EditorFileSystem::get_singleton()->is_scanning()) {
 		// Wait until EditorFileSystem scanning is complete to use updated filesystem structure.
 		EditorFileSystem::get_singleton()->connect(SNAME("sources_changed"), callable_mp_static(_regenerate_script_doc_cache), CONNECT_ONE_SHOT);
@@ -3252,11 +3264,14 @@ void EditorHelp::save_script_doc_cache() {
 }
 
 void EditorHelp::generate_doc(bool p_use_cache, bool p_use_script_cache) {
-	doc_generation_count++;
-	OS::get_singleton()->benchmark_begin_measure("EditorHelp", vformat("Generate Documentation (Run %d)", doc_generation_count));
-
+	if (doc_cleanup_started) {
+		return;
+	}
 	// In case not the first attempt.
 	_wait_for_thread();
+	doc_generation_count++;
+	doc_generation_pending.set();
+	OS::get_singleton()->benchmark_begin_measure("EditorHelp", vformat("Generate Documentation (Run %d)", doc_generation_count));
 
 	if (!doc) {
 		doc = memnew(DocTools);
@@ -3363,7 +3378,9 @@ void EditorHelp::update_doc() {
 }
 
 void EditorHelp::cleanup_doc() {
+	doc_cleanup_started = true;
 	_wait_for_thread();
+	doc_generation_pending.clear();
 	memdelete(doc);
 	doc = nullptr;
 }

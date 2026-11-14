@@ -108,7 +108,7 @@ def configure_catalog(catalog):
     """Declare successful output shapes in the same registry exposed to clients."""
     groups = {
         "tool_names": ["capabilities_get"], "tools": ["tools_discover"], "connected": ["editor_status"],
-        "job_id state artifacts": ["job_get", "job_wait", "job_cancel", "editor_start", "editor_close", "editor_restart", "run_start", "run_stop"],
+        "job_id state artifacts": ["job_get", "job_wait", "job_cancel", "editor_start", "editor_close", "editor_restart", "extension_reload", "run_start", "run_stop"],
         "events next_cursor dropped": ["events_read"],
         "artifact_id encoding data next_offset size complete": ["artifact_read"],
         "artifact_id width height driver target": ["capture_frame"], "sessions runs": ["run_list"],
@@ -200,7 +200,7 @@ def configure_outputs(catalog):
             fields.update({"object": reference, "properties": {"type": "array", "maxItems": 256, "items": prop}})
         if name in {"godot_resource_load", "godot_resource_create", "godot_resource_duplicate"}:
             fields["resource"] = reference
-        if name in {"godot_job_get", "godot_job_wait", "godot_job_cancel", "godot_editor_start", "godot_editor_close", "godot_editor_restart", "godot_run_start", "godot_run_stop", "godot_resource_reimport"}:
+        if name in {"godot_job_get", "godot_job_wait", "godot_job_cancel", "godot_editor_start", "godot_editor_close", "godot_editor_restart", "godot_extension_reload", "godot_run_start", "godot_run_stop", "godot_resource_reimport"}:
             fields.update({"job_id": string, "state": {"enum": ["queued", "running", "succeeded", "failed", "cancelled", "timed_out"]}, "sequence": integer, "artifacts": {"type": "array", "items": string}, "result": {"type": "object"}, "error": string})
             schema["allOf"] = [{"anyOf": [{"properties": {"state": {"enum": ["queued", "running", "cancelled"]}}}, {"required": ["result"], "properties": {"state": {"const": "succeeded"}}}, {"required": ["error"], "properties": {"state": {"enum": ["failed", "timed_out"]}}}]}]
         if name == "godot_events_read":

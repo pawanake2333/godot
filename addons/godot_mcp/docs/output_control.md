@@ -1,6 +1,6 @@
 # Output 面板操作
 
-适用 Godot MCP 0.6.1，协议 2。公开工具为 `godot_output_control`，位于默认目录；读取不受面板显示影响的结构化诊断仍使用 `godot_diagnostics_read`。
+适用 Godot MCP 0.6.2，协议 2。公开工具为 `godot_output_control`，位于默认目录；读取不受面板显示影响的结构化诊断仍使用 `godot_diagnostics_read`。
 
 ## 操作范围
 

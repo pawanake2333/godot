@@ -62,9 +62,13 @@ private:
 	LoadStatus _load_extension_internal(const Ref<GDExtension> &p_extension, bool p_first_load);
 	void _finish_load_extension(const Ref<GDExtension> &p_extension);
 	LoadStatus _unload_extension_internal(const Ref<GDExtension> &p_extension);
+	LoadStatus _reload_extension_internal(const String &p_path);
+	uint64_t requested_reload_revision = 0;
+	uint64_t completed_reload_revision = 0;
 
 #ifdef TOOLS_ENABLED
-	static void _reload_all_scripts();
+	void _queue_script_reload();
+	static void _reload_all_scripts(uint64_t p_revision);
 #endif
 
 public:
@@ -72,6 +76,7 @@ public:
 	LoadStatus load_extension_from_function(const String &p_path, GDExtensionConstPtr<const GDExtensionInitializationFunction> p_init_func);
 	LoadStatus load_extension_with_loader(const String &p_path, const Ref<GDExtensionLoader> &p_loader);
 	LoadStatus reload_extension(const String &p_path);
+	Dictionary get_reload_state() const;
 	LoadStatus unload_extension(const String &p_path);
 	bool is_extension_loaded(const String &p_path) const;
 	Vector<String> get_loaded_extensions() const;

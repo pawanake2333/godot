@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import threading
 import uuid
 from lifecycle import Lifecycle
@@ -27,6 +28,13 @@ def tool(name, description, properties=None, required=()):
 STRING = {"type": "string", "minLength": 1}
 TIMEOUT = {"type": "integer", "minimum": 1, "maximum": 3600000}
 LOCAL_TOOLS = [
+    tool("godot_extension_reload", "Reload a project GDExtension through the native editor API and verify native class/method registration; stop games and save documents first.", {
+        "path": {"type": "string", "pattern": "^res://.+\\.gdextension$"},
+        "editor_epoch": STRING,
+        "expected_document_revision": STRING,
+        "expected_library_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "expected_classes": {"type": "object", "maxProperties": 256, "additionalProperties": {"type": "array", "maxItems": 256, "items": STRING}},
+    }, ["path", "editor_epoch", "expected_document_revision"]),
     tool("godot_capabilities_get", "Report actual local tool and task capabilities; editor connectivity is queried separately."),
     tool("godot_tools_discover", "Find stateful tools on demand. Returns compact summaries by default; request include_schema=true for selected tools. Prefer ordinary file editing for saved code and assets.", {"query": {"type": "string"}}),
     tool("godot_tools_call", "Invoke a registered tool with the same validation and execution path.", {"tool_name": STRING, "arguments": {"type": "object"}}, ["tool_name", "arguments"]),
@@ -100,6 +108,19 @@ class Services:
         return {k: v for k, v in job.items() if k not in {"process", "thread", "output_path", "report_path", "json_report", "result_artifacts", "require_artifacts"}}
 
     def invoke(self, name, args, catalog, dispatch, editor):
+        if name == "godot_extension_reload":
+            def reload_extension():
+                ticket = editor("_extension_reload_begin", args)
+                deadline = time.monotonic() + 9
+                while True:
+                    # Each RPC waits for the editor event loop over the socket.
+                    # Deferred script reload must finish before validation.
+                    result = editor("_extension_reload_complete", ticket)
+                    if not result.get("pending", False):
+                        return result
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Native reload completion timed out; inspect editor state and do not replay automatically")
+            return self.submit_operation(name, reload_extension)
         if name in {"godot_run_start", "godot_run_list", "godot_run_stop"} or (name == "godot_run_wait" and "run_id" in args):
             return self.runs.invoke(name, args, editor)
         if name == "godot_run_wait":

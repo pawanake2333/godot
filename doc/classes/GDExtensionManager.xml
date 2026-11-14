@@ -12,6 +12,12 @@
 		<link title="GDExtension example in C++">$DOCS_URL/tutorials/scripting/cpp/gdextension_cpp_example.html</link>
 	</tutorials>
 	<methods>
+		<method name="get_reload_state" qualifiers="const">
+			<return type="Dictionary" />
+			<description>
+				Returns [code]requested_revision[/code] and [code]completed_revision[/code] for editor extension refreshes. A completed revision includes the deferred script-language reload, in addition to native class registration and the Inspector and script editor refresh. Values remain zero outside editor builds.
+			</description>
+		</method>
 		<method name="get_extension">
 			<return type="GDExtension" />
 			<param index="0" name="path" type="String" />

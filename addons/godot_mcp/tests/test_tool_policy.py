@@ -15,10 +15,10 @@ class ToolPolicyTests(unittest.TestCase):
         bridge = server.GodotBridge("127.0.0.1", None, 1, 1)
         default = server.handle_message({"id": 1, "method": "tools/list"}, bridge)["result"]["tools"]
         self.assertEqual({tool["name"] for tool in default}, CORE_TOOL_NAMES)
-        self.assertEqual(len(default), 24)
+        self.assertEqual(len(default), 25)
         bridge.toolset = "all"
         full = server.handle_message({"id": 2, "method": "tools/list"}, bridge)["result"]["tools"]
-        self.assertEqual(len(full), 62)
+        self.assertEqual(len(full), 63)
         self.assertLess(len(json.dumps(default)), len(json.dumps(full)) * .6)
 
     def test_lazy_discovery_and_extended_dispatch_use_existing_schemas(self):

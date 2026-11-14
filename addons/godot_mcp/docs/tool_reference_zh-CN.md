@@ -3,10 +3,10 @@
 | 文档属性 | 内容 |
 | --- | --- |
 | 文档版本 | 1.4 |
-| 适用插件 | Godot MCP 0.6.1 |
+| 适用插件 | Godot MCP 0.6.2 |
 | 自动化协议 | 2 |
 | 引擎基线 | Godot 4.7.2 定制编辑器 |
-| 工具数量 | 62 个公开工具 |
+| 工具数量 | 63 个公开工具 |
 | 更新日期 | 2026年11月12日 |
 | 维护位置 | 定制 Godot 仓库的 addons/godot_mcp |
 
@@ -14,7 +14,7 @@
 
 Godot MCP 为开发者和自动化客户端提供当前编辑器、场景文档、内存资源与调试游戏实例的通用操作接口。日常脚本、已保存场景、资源和配置优先直接修改文件。MCP 负责文件操作无法直接获得的会话状态、运行观测和调试控制；需要操作未保存文档或保留 Undo 时，才使用内存编辑能力。它保留 Godot 文档身份、Undo 历史、未保存内容、对象引用及调试会话，使自动化能够在明确目标和版本约束下完成开发任务。
 
-本手册逐项定义当前 62 个注册工具（默认展示 24 个，扩展工具 38 个）的用途、执行位置、主要参数、核心结果、限制和调用示例。适用于日常编辑、界面验证、运行检查、动画检查、断点调试及自动化流程编写，面向通用开发流程。
+本手册逐项定义当前 63 个注册工具（默认展示 25 个，扩展工具 38 个）的用途、执行位置、主要参数、核心结果、限制和调用示例。适用于日常编辑、界面验证、运行检查、动画检查、断点调试及自动化流程编写，面向通用开发流程。
 
 烘焙、无头测试、导出、磁盘源码编辑与搜索、静态依赖扫描和图像比较由原生命令或外部工具完成。它们不在公开 MCP 目录内。旧版 25 个入口已删除，不提供兼容别名。
 
@@ -27,16 +27,16 @@ Godot MCP 为开发者和自动化客户端提供当前编辑器、场景文档�
 
 ### 默认目录与扩展能力
 
-`tools/list` 默认只展示 24 个高频工具。其他 38 个有状态编辑或专项检查工具仍注册在同一个目录中，通过 `godot_tools_discover` 按需发现，再用 `godot_tools_call` 调用，参数和版本校验与直接调用一致。
+`tools/list` 默认只展示 25 个高频工具。其他 38 个有状态编辑或专项检查工具仍注册在同一个目录中，通过 `godot_tools_discover` 按需发现，再用 `godot_tools_call` 调用，参数和版本校验与直接调用一致。
 
-发现入口默认每页 20 个摘要、include_schema=false；需要某个工具的契约时，按 query/domains/tier 缩小范围并设置 include_schema=true。工具元数据 `_meta.godot/tier` 为 core 或 extended。启动 sidecar 时显式选择 `--toolset all` 可一次展示全部 62 个；默认 core 适合日常开发。
+发现入口默认每页 20 个摘要、include_schema=false；需要某个工具的契约时，按 query/domains/tier 缩小范围并设置 include_schema=true。工具元数据 `_meta.godot/tier` 为 core 或 extended。启动 sidecar 时显式选择 `--toolset all` 可一次展示全部 63 个；默认 core 适合日常开发。
 
 默认工具按工作环节分为以下几组：
 
 | 环节 | 默认工具 |
 | --- | --- |
 | 能力与发现 | godot_capabilities_get、godot_tools_discover、godot_tools_call |
-| 编辑器与诊断 | godot_editor_status、godot_editor_start、godot_editor_close、godot_editor_restart、godot_diagnostics_read、godot_output_control |
+| 编辑器与诊断 | godot_editor_status、godot_editor_start、godot_editor_close、godot_editor_restart、godot_extension_reload、godot_diagnostics_read、godot_output_control |
 | 文档协调 | godot_scene_list、godot_scene_tree、godot_filesystem_scan |
 | 任务与运行 | godot_job_wait、godot_run_start、godot_run_list、godot_run_stop、godot_run_wait |
 | 运行验证 | godot_object_inspect、godot_runtime_wait、godot_input_send、godot_input_release_all、godot_capture_frame |
@@ -150,12 +150,12 @@ scene_save、scene_close、节点选择及编辑态有副作用的方法调用�
 | [9 对象查询与属性](#9-对象查询与属性) | 5 | 按类和名称查找对象、读取类型化对象属性、批量修改对象属性、调用反射方法、释放对象引用租约 |
 | [10 编辑器资源](#10-编辑器资源) | 4 | 加载工程资源、创建原生内存资源、复制资源、保存资源文件 |
 | [11 脚本文档与资源刷新](#11-脚本文档与资源刷新) | 5 | 读取编辑器脚本缓冲区、修改脚本缓冲区或撤销重做、重载关闭的项目脚本、扫描当前编辑器文件系统、重导入指定资源 |
-| [12 编辑器生命周期](#12-编辑器生命周期) | 3 | 启动或复用编辑器、保护文档后关闭编辑器、重启并恢复保存的文档 |
+| [12 编辑器生命周期](#12-编辑器生命周期) | 4 | 启动或复用编辑器、保护文档后关闭编辑器、重启并恢复保存的文档、核验原生扩展重载 |
 | [13 运行实例](#13-运行实例) | 4 | 启动自有调试实例、列出运行和调试会话、停止服务自有实例、等待实例阶段或会话数量 |
 | [14 输入等待与界面截图](#14-输入等待与界面截图) | 7 | 向指定实例发送输入、释放当前连接的输入、执行帧间隔输入序列、等待帧属性或信号条件、检查运行界面布局、设置运行控件焦点、捕获指定 GPU 画面 |
 | [15 动画与骨骼姿态](#15-动画与骨骼姿态) | 4 | 列出动画资源、检查轨迹和关键帧、编辑自有动画资源、采样轨迹值或骨骼姿态 |
 | [16 调试与性能](#16-调试与性能) | 6 | 设置脚本断点、清除脚本断点、读取暂停栈和变量、暂停继续或单步、读取引擎监控指标、采集原生性能帧 |
-合计 62 个注册工具，其中默认 24 个、扩展 38 个。完整机器可读契约见 [tool_catalog.json](tool_catalog.json)。
+合计 63 个注册工具，其中默认 25 个、扩展 38 个。完整机器可读契约见 [tool_catalog.json](tool_catalog.json)。
 
 
 ## 4 基础能力与诊断
@@ -1370,7 +1370,7 @@ id 只可用于 create、instance_scene、duplicate，必须在本批次唯一�
 | `reuse` | 可选 | 布尔 | 是否复用已匹配编辑器 |
 | `timeout_ms` | 可选 | 整数；1～3600000 | 本次操作或等待期限，单位毫秒 |
 
-**核心结果**：任务成功结果含 reused、state；新进程还报告 display_mode。
+**核心结果**：任务成功结果含 reused、state；新进程还报告 display_mode 和启动日志 log_artifact，可通过 artifact_read 分页读取。
 
 **使用约束**：需 sidecar 配置工程与引擎路径。reuse 默认 true；display_mode 为 headless_logic/visible，默认 headless_logic；timeout_ms 默认 15000。reuse=false 遇到已存在编辑器会拒绝，不隐式开第二个工程编辑器。
 
@@ -1401,7 +1401,7 @@ id 只可用于 create、instance_scene、duplicate，必须在本批次唯一�
 | `timeout_ms` | 可选 | 整数；1～3600000 | 本次操作或等待期限，单位毫秒 |
 | `unsaved` | 可选 | 字符串；reject / save / discard | 未保存内容处理策略 |
 
-**核心结果**：任务成功结果含 closed、editor_pid、场景和脚本标签信息。
+**核心结果**：任务成功结果含 closed、editor_pid、场景和脚本标签信息；本服务启动的进程还报告实际 exit_code。
 
 **使用约束**：editor_epoch 与 expected_document_revision 来自最新 editor_status。unsaved 默认 reject，可显式 save/discard；未命名场景先给路径保存。任务 succeeded 才表示进程已退出，可用于后续外部原生扩展构建。
 
@@ -1450,6 +1450,41 @@ id 只可用于 create、instance_scene、duplicate，必须在本批次唯一�
 }
 ```
 
+
+### 12.4 godot_extension_reload 重载并核验原生扩展
+
+**入口层级**：默认工具。
+
+对当前工程已加载的 `.gdextension` 调用 Godot 原生重载，等待原生类注册、Inspector、脚本编辑器、延后的脚本语言及帮助文档刷新完成，再验证类型与方法。外部编译由工程工具链执行。
+
+**执行位置**：S/E，任务。
+
+**主要参数**
+
+| 参数 | 要求 | 类型与范围 | 说明 |
+| --- | --- | --- | --- |
+| `path` | 必填 | 字符串 | 规范的 `res://` 工程扩展声明路径 |
+| `editor_epoch` | 必填 | 字符串 | 最新 editor_status 返回的编辑器代次 |
+| `expected_document_revision` | 必填 | 字符串 | 最新 editor_status 返回的整组文档版本 |
+| `expected_library_hash` | 可选 | 64 位小写十六进制字符串 | 编译完成后原始动态库的 SHA256 |
+| `expected_classes` | 可选 | 对象，最多 256 项；每类最多 256 个方法名 | 类名到必需方法名数组的映射；必须属于目标扩展 |
+
+**核心结果**：先返回 job_id；job_wait 成功结果含 reloaded、verified、native_status、requires_restart、library_path/hash、classes（父类及本类方法/属性/信号名）、added_classes、removed_classes、editor_pid/epoch、document_revision、reload_revision、runtime_updated=false。
+
+**使用约束**：先停止游戏并保存场景、脚本及其他资源。扩展必须已启用 `reloadable=true` 且绑定支持重载；给现有编辑器首次开启时需重启一次。禁止在运行中替换扩展。原生类父类变化等不受支持的操作仍可能需要重启；失败不会自动重放或关闭编辑器。任务成功同时表示原生刷新完成、期望类/方法存在且没有新增错误；原生返回 OK 但注册丢失、脚本刷新报错或库在重载过程中改变时，任务明确失败。若有意将某个类的所有方法移除，在 expected_classes 中显式给该类空数组。重载复用原生实例重建和属性恢复，不提供 Undo，也不保留已停止游戏的状态。
+
+macOS 编辑器以每代独立的同目录临时副本装载动态库，保留 `@loader_path` 依赖和原始库的资源定位；副本在关闭库或编辑器结束时清理。扩展自身应隐藏内部符号，避免不同代的弱符号共享初始化状态。
+
+**调用示例**
+
+```json
+{
+  "path": "res://addons/example/example.gdextension",
+  "editor_epoch": "<editor_epoch>",
+  "expected_document_revision": "<document_revision>",
+  "expected_classes": {"ExampleNode": ["get_generation"]}
+}
+```
 
 ## 13 运行实例
 
@@ -2239,8 +2274,8 @@ animation_list/inspect 检查来源 → 需要修改导入动画时先 resource_
 | --- | --- |
 | JSON | 输入 4 MiB、结果 8 MiB、深度 32、单数组 4096 项、总节点 100000 |
 | 类型化值 | 嵌套解码深度 12；VariantText 输入文本最多 65536 字符 |
-| 对象引用 | 每个编辑器或运行上下文 1024 项；120 秒访问续租；显式 release 不销毁 Node |
-| 树快照 | 每上下文缓存 8 个，30 秒有效；最多 16384 节点和 2 MiB 元信息；单页最多 1024 项 |
+| 对象引用 | 每个编辑器或运行上下文 1025 项；120 秒访问续租；显式 release 不销毁 Node |
+| 树快照 | 每上下文缓存 8 个，30 秒有效；最多 16384 节点和 2 MiB 元信息；单页最多 1025 项 |
 | 结构编辑 | 每批最多 256 操作，批量预检最多 4096 个场景节点 |
 | 脚本缓冲区 | 1 MiB，最多 256 个精确替换 |
 | 任务 | 服务最多保留 128 条记录、8 个活动操作；已完成任务不自动变成无限历史 |
@@ -2274,7 +2309,7 @@ animation_list/inspect 检查来源 → 需要修改导入动画时先 resource_
 
 ## 19 版本维护与参考资料
 
-新增或修改公开工具时，同步更新注册表、输入输出 Schema、本手册、示例及部署副本。手册中的全部 62 个示例通过当前注册表的参数 Schema 校验；该校验只验证调用结构，不替代项目中的实际对象、脚本方法或资源存在性检查。
+新增或修改公开工具时，同步更新注册表、输入输出 Schema、本手册、示例及部署副本。手册中的全部 63 个示例通过当前注册表的参数 Schema 校验；该校验只验证调用结构，不替代项目中的实际对象、脚本方法或资源存在性检查。
 
 - [机器可读工具目录](tool_catalog.json)：公开输入与成功输出契约。
 - [安装和使用指南](../README_zh-CN.md)：工程配置、常驻服务和复测方式。

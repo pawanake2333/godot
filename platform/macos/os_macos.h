@@ -33,6 +33,8 @@
 #include "crash_handler_macos.h"
 
 #include "core/input/input_event.h"
+#include "core/os/mutex.h"
+#include "core/templates/hash_map.h"
 #include "core/templates/rb_map.h"
 #import "drivers/coreaudio/audio_driver_coreaudio.h"
 #import "drivers/coremidi/midi_driver_coremidi.h"
@@ -52,6 +54,10 @@ class OS_MacOS : public OS_Unix {
 	CrashHandler crash_handler;
 
 	List<String> launch_service_args;
+	Mutex dynamic_library_mutex;
+	uint64_t dynamic_library_serial = 0;
+	HashMap<void *, Vector<String>> temporary_libraries;
+	void _cleanup_temporary_libraries();
 
 	CGFloat _weight_to_ct(int p_weight) const;
 	CGFloat _stretch_to_ct(int p_stretch) const;
@@ -112,6 +118,7 @@ public:
 	virtual void alert(const String &p_alert, const String &p_title = "ALERT!") override;
 
 	virtual Error open_dynamic_library(const String &p_path, void *&p_library_handle, GDExtensionData *p_data = nullptr) override;
+	virtual Error close_dynamic_library(void *p_library_handle) override;
 
 	virtual MainLoop *get_main_loop() const override;
 
@@ -179,6 +186,7 @@ public:
 	}
 
 	OS_MacOS(const char *p_execpath, int p_argc, char **p_argv);
+	~OS_MacOS() override;
 };
 
 class OS_MacOS_NSApp : public OS_MacOS {

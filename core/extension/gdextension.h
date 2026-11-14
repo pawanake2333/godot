@@ -139,6 +139,9 @@ public:
 	Error open_library(const String &p_path, const Ref<GDExtensionLoader> &p_loader);
 	void close_library();
 	bool is_library_open() const;
+	String get_library_path() const;
+	PackedStringArray get_registered_classes() const;
+	bool is_reloadable() const { return reloadable; }
 
 	enum InitializationLevel {
 		INITIALIZATION_LEVEL_CORE = GDEXTENSION_INITIALIZATION_CORE,
@@ -157,7 +160,6 @@ protected:
 
 public:
 #ifdef TOOLS_ENABLED
-	bool is_reloadable() const { return reloadable; }
 	void set_reloadable(bool p_reloadable) { reloadable = p_reloadable; }
 
 	bool has_library_changed() const;

@@ -174,7 +174,7 @@ class Lifecycle:
                     state = editor("_editor_state", {})
                     if state.get("editor_pid") == process.pid:
                         try:
-                            return {"reused": False, "state": editor("_editor_ready", {}), "display_mode": mode}
+                            return {"reused": False, "state": editor("_editor_ready", {}), "display_mode": mode, "log_artifact": service.register_artifact(output, "text/plain")}
                         except RuntimeError as error:
                             if "EDITOR_NOT_READY" in str(error):
                                 continue
@@ -210,7 +210,7 @@ class Lifecycle:
             process = self.editors.pop(pid, None)
             if process is not None:
                 process.wait(timeout=1)
-        return {"closed": True, "editor_pid": pid, "documents": result.get("documents", []), "active_scene": result.get("active_scene", ""), "script_documents": result.get("script_documents", []), "active_script": result.get("active_script", "")}
+        return {"closed": True, "editor_pid": pid, "exit_code": process.returncode if process is not None else None, "documents": result.get("documents", []), "active_scene": result.get("active_scene", ""), "script_documents": result.get("script_documents", []), "active_script": result.get("active_script", "")}
 
     def restart(self, args, editor):
         closed = self.close(args, editor)

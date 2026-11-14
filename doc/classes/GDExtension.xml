@@ -12,6 +12,18 @@
 		<link title="GDExtension example in C++">$DOCS_URL/tutorials/scripting/cpp/gdextension_cpp_example.html</link>
 	</tutorials>
 	<methods>
+		<method name="get_library_path" qualifiers="const">
+			<return type="String" />
+			<description>
+				Returns the original native library path selected by the file-based loader, or an empty string for other loaders. Editor-only temporary copies do not change this resource location.
+			</description>
+		</method>
+		<method name="get_registered_classes" qualifiers="const">
+			<return type="PackedStringArray" />
+			<description>
+				Returns the sorted names of the native classes currently registered by this extension. Reload validation can inspect these classes through [ClassDB].
+			</description>
+		</method>
 		<method name="get_minimum_library_initialization_level" qualifiers="const">
 			<return type="int" enum="GDExtension.InitializationLevel" />
 			<description>
@@ -22,6 +34,12 @@
 			<return type="bool" />
 			<description>
 				Returns [code]true[/code] if this extension's library has been opened.
+			</description>
+		</method>
+		<method name="is_reloadable" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns whether the loaded extension supports reloading in the current editor process. This requires a reloadable configuration and binding support. Returns [code]false[/code] outside editor builds.
 			</description>
 		</method>
 	</methods>

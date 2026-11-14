@@ -69,6 +69,13 @@
 				Edits the given [Resource]. If the resource is a [Script] you can also edit it with [method edit_script] to specify the line and column position.
 			</description>
 		</method>
+		<method name="is_extension_reload_complete" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="revision" type="int" />
+			<description>
+				Returns whether the requested [GDExtensionManager] reload revision has completed its script-language refresh and the editor help documentation generation. Returns [code]false[/code] during editor shutdown.
+			</description>
+		</method>
 		<method name="is_editor_ready" qualifiers="const">
 			<return type="bool" />
 			<description>

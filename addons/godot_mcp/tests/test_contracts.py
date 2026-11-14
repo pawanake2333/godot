@@ -48,7 +48,7 @@ class ContractTests(unittest.TestCase):
     def test_legacy_entry_points_are_removed(self):
         old = ['godot_get_state', 'godot_get_open_scenes', 'godot_close_scene', 'godot_open_scene', 'godot_list_commands', 'godot_run_command', 'godot_play', 'godot_stop', 'godot_capture', 'godot_get_edited_scene', 'godot_inspect_editor_node', 'godot_set_editor_property', 'godot_save_scene', 'godot_get_runtime_tree', 'godot_inspect_runtime_object', 'godot_set_runtime_property', 'godot_send_input_action', 'godot_create_editor_node', 'godot_delete_editor_node', 'godot_editor_undo', 'godot_editor_redo', 'godot_reload_project', 'godot_get_logs', 'godot_send_mouse_event', 'godot_wait_runtime_frames']
         names = {tool["name"] for tool in server.TOOLS}
-        self.assertEqual(len(names), 62)
+        self.assertEqual(len(names), 63)
         self.assertFalse(names.intersection(old))
 
     def test_every_tool_has_a_success_output_schema(self):

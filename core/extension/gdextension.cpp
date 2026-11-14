@@ -767,13 +767,7 @@ void GDExtension::_unregister_extension_class(GDExtensionClassLibraryPtr p_libra
 void GDExtension::_get_library_path(GDExtensionClassLibraryPtr p_library, GDExtensionUninitializedStringPtr r_path) {
 	GDExtension *self = reinterpret_cast<GDExtension *>(p_library);
 
-	Ref<GDExtensionLibraryLoader> library_loader = self->loader;
-	String library_path;
-	if (library_loader.is_valid()) {
-		library_path = library_loader->library_path;
-	}
-
-	memnew_placement(r_path, String(library_path));
+	memnew_placement(r_path, String(self->get_library_path()));
 }
 
 void GDExtension::_register_get_classes_used_callback(GDExtensionClassLibraryPtr p_library, GDExtensionEditorGetClassesUsedCallback p_callback) {
@@ -838,6 +832,20 @@ bool GDExtension::is_library_open() const {
 	return loader.is_valid() && loader->is_library_open();
 }
 
+String GDExtension::get_library_path() const {
+	Ref<GDExtensionLibraryLoader> library_loader = loader;
+	return library_loader.is_valid() ? library_loader->library_path : String();
+}
+
+PackedStringArray GDExtension::get_registered_classes() const {
+	PackedStringArray names;
+	for (const KeyValue<StringName, Extension> &entry : extension_classes) {
+		names.push_back(entry.key);
+	}
+	names.sort();
+	return names;
+}
+
 GDExtension::InitializationLevel GDExtension::get_minimum_library_initialization_level() const {
 	ERR_FAIL_COND_V(!is_library_open(), INITIALIZATION_LEVEL_CORE);
 	return InitializationLevel(initialization.minimum_initialization_level);
@@ -866,6 +874,9 @@ void GDExtension::deinitialize_library(InitializationLevel p_level) {
 
 void GDExtension::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_library_open"), &GDExtension::is_library_open);
+	ClassDB::bind_method(D_METHOD("is_reloadable"), &GDExtension::is_reloadable);
+	ClassDB::bind_method(D_METHOD("get_library_path"), &GDExtension::get_library_path);
+	ClassDB::bind_method(D_METHOD("get_registered_classes"), &GDExtension::get_registered_classes);
 	ClassDB::bind_method(D_METHOD("get_minimum_library_initialization_level"), &GDExtension::get_minimum_library_initialization_level);
 
 	BIND_ENUM_CONSTANT(INITIALIZATION_LEVEL_CORE);
